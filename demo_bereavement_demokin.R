@@ -76,7 +76,6 @@ ff <- swe_asfr  # female age-specific fertility rate (live births per woman per 
 n_ages <- nrow(pf)   # 101 (ages 0 to 100)
 n_yrs  <- ncol(pf)   # 119
 
-cat("Data loaded: ages 0-100, years", colnames(pf)[1], "to", colnames(pf)[n_yrs], "\n")
 
 # --- Synthetic male rates ----------------------------------------------------
 # DemoKin's built-in data are female-only. We create plausible male rates.
@@ -109,10 +108,8 @@ dimnames(fm) <- dimnames(ff)
 cache_file <- "data_int/kin_full_swe_demo.rds"
 
 if (file.exists(cache_file)) {
-  cat("Loading cached kin_full from", cache_file, "\n")
   kin_full <- readRDS(cache_file)
 } else {
-  cat("Running kin2sex() [two-sex, time-varying] — this may take a few minutes...\n")
   kin_out <- kin2sex(
     pf = pf, pm = pm,
     ff = ff, fm = fm,
@@ -124,14 +121,12 @@ if (file.exists(cache_file)) {
   kin_full <- kin_out$kin_full
   dir.create("data_int", showWarnings = FALSE)
   saveRDS(kin_full, cache_file)
-  cat("Saved kin_full to", cache_file, "\n")
 }
 
-cat(sprintf("kin_full: %d rows | %d years (%s-%s) | kin types: %s\n",
-            nrow(kin_full),
-            n_distinct(kin_full$year),
-            min(kin_full$year), max(kin_full$year),
-            paste(sort(unique(kin_full$kin)), collapse = ", ")))
+# Quick check: dimensions and coverage
+nrow(kin_full)
+range(kin_full$year)
+sort(unique(kin_full$kin))
 
 # =============================================================================
 # 3.  COMPUTE PROBABILITY OF DYING  (qx)
@@ -190,17 +185,12 @@ dimnames(pop_mat) <- list(as.character(0:100), colnames(swe_pop))
 #   bereaved      = expected number of bereaved women of this age
 #   bereaved_prop = bereaved / total women in that year
 
-cat("Running bereavement()...\n")
-
 result <- bereavement(
   kin_full    = kin_full,
   qx          = list(f = qx_f, m = qx_m),
   pop         = pop_mat,
   output_year = NULL
 )
-
-cat(sprintf("Done. Output: %d rows | years %d-%d\n",
-            nrow(result), min(result$year), max(result$year)))
 
 # =============================================================================
 # 6.  AGGREGATE: total bereaved women by kin type and year
@@ -221,8 +211,7 @@ summary_by_year <- result |>
 # rename_kin() maps codes like "m", "d", "gm" to "Mothers", "Children", etc.
 summary_by_year <- rename_kin(summary_by_year, sex = "f")
 
-# Print a snapshot for selected years
-cat("\nBereaved share (% of Swedish women) in selected years:\n")
+# Bereaved share (% of Swedish women) in selected years
 summary_by_year |>
   filter(year %in% c(1950, 1970, 1990, 2010)) |>
   mutate(pct = round(bereaved_prop * 100, 2)) |>

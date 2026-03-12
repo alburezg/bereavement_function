@@ -141,9 +141,6 @@ source("bereavement.R")
 ```{r load-data}
 pf <- swe_px    # female survival:  101 ages × 119 years
 ff <- swe_asfr  # female fertility: 101 ages × 119 years
-
-cat("Ages:", rownames(pf)[1], "to", rownames(pf)[nrow(pf)], "\n")
-cat("Years:", colnames(pf)[1], "to", colnames(pf)[ncol(pf)], "\n")
 ```
 
 `DemoKin`'s built-in data are female only. The two-sex model requires male rates as well. Following the DemoKin vignette (Caswell 2022), we construct synthetic male rates:
@@ -203,16 +200,25 @@ Key arguments:
 | `birth_female` | Proportion of births that are female (typically `1/2.04 ≈ 0.49`) |
 | `output_kin` | Which relationship types to compute (limits time and memory) |
 
-The time-varying model (`time_invariant = FALSE`) is computationally intensive — it must propagate rates from every birth cohort's birth year to the present. We cache the result to disk:
+The time-varying model (`time_invariant = FALSE`) is computationally intensive — it must propagate rates from every birth cohort's birth year to the present. Results are cached automatically on first run.
 
-```{r kin2sex, cache=FALSE}
+```{r kin2sex, eval=FALSE}
+kin_out <- kin2sex(
+  pf = pf, pm = pm,
+  ff = ff, fm = fm,
+  sex_focal      = "f",
+  time_invariant = FALSE,
+  birth_female   = 1 / 2.04,
+  output_kin     = c("d", "gd", "gm", "m", "s")
+)
+kin_full <- kin_out$kin_full
+```
+
+```{r kin2sex-cache, echo=FALSE}
 cache_file <- "cache/kin_full_swe_demo.rds"
-
 if (file.exists(cache_file)) {
   kin_full <- readRDS(cache_file)
-  cat("Loaded cached kin_full from", cache_file, "\n")
 } else {
-  cat("Running kin2sex() [two-sex, time-varying] — this may take a few minutes...\n")
   kin_out <- kin2sex(
     pf = pf, pm = pm,
     ff = ff, fm = fm,
@@ -224,16 +230,13 @@ if (file.exists(cache_file)) {
   kin_full <- kin_out$kin_full
   dir.create("cache", showWarnings = FALSE)
   saveRDS(kin_full, cache_file)
-  cat("Saved to", cache_file, "\n")
 }
+```
 
-cat(sprintf(
-  "kin_full: %s rows | %d years (%d-%d) | kin types: %s\n",
-  formatC(nrow(kin_full), format = "d", big.mark = ","),
-  n_distinct(kin_full$year),
-  min(kin_full$year), max(kin_full$year),
-  paste(sort(unique(kin_full$kin)), collapse = ", ")
-))
+```{r kin-dims}
+nrow(kin_full)             # total rows
+range(kin_full$year)       # years covered
+sort(unique(kin_full$kin)) # kin types computed
 ```
 
 Here is what the first few rows look like:
@@ -297,11 +300,8 @@ qx_m <- 1 - pmax(pm, 1e-6)
 dimnames(qx_f) <- dimnames(pf)
 dimnames(qx_m) <- dimnames(pm)
 
-# Sanity check: no exact 1s in either matrix
-stopifnot(max(qx_f) < 1, max(qx_m) < 1)
-
-cat("qx_f range: [", round(min(qx_f), 6), ",", round(max(qx_f), 6), "]\n")
-cat("qx_m range: [", round(min(qx_m), 6), ",", round(max(qx_m), 6), "]\n")
+range(qx_f)  # female qx: min and max
+range(qx_m)  # male   qx: min and max
 ```
 
 ---
