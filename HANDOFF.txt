@@ -1,0 +1,804 @@
+================================================================================
+TECHNICAL HANDOFF — bereavement() function for DemoKin
+================================================================================
+
+Date:    2026-03-12
+Author:  Diego Alburez-Gutierrez
+Purpose: Sufficient documentation for a future AI or developer to understand,
+         reconstruct, extend, and integrate this function into DemoKin without
+         reference to any other file. Written at the level of a Demographic
+         Research Methods paper.
+
+================================================================================
+PART I — DEMOGRAPHIC THEORY
+================================================================================
+
+── 1. THE KINSHIP SURFACE (Caswell's matrix model) ──────────────────────────────
+
+The function bereavement() operates downstream of Caswell's formal demographic
+kinship model, implemented in R as DemoKin (IvanWilli/DemoKin on GitHub). A
+brief account of that model is necessary to understand what bereavement() does.
+
+Caswell (2019, 2021, 2022) formulated kinship dynamics as a stage-classified
+matrix population model. For a "focal" individual — a reference person whose kin
+we track — the model computes the expected number of living relatives of each
+type (parent, grandparent, sibling, child, etc.) at each age of the focal
+person. The model is deterministic in expectation and treats kin counts as
+continuous-valued (not integer-valued); this is important for understanding the
+non-integer exponents in the bereavement formula.
+
+The core objects are:
+
+  U(t): the age-classified survival operator (Leslie matrix without fertility)
+        for year t. U[i,j] = probability that a person in age class j-1 survives
+        to age class i in year t. For a single-sex model, this is a 101x101
+        subdiagonal matrix: U[a+1, a] = p(a, t), the survival probability at age
+        a in year t.
+
+  F(t): the age-classified fertility operator. F[0, a] = f(a, t) * s_f, where
+        f(a, t) is the age-specific fertility rate and s_f is the sex ratio of
+        female births (typically 1/2.04 ~= 0.49).
+
+  L(a, a', k, y): the kinship surface -- the expected number of living relatives
+        of relationship type k, aged a', for a focal individual of age a in
+        calendar year y. This is the central output of DemoKin::kin() and
+        DemoKin::kin2sex().
+
+In the two-sex model (kin2sex), U and F are defined separately for males and
+females, and the kinship surface acquires an additional sex-of-kin dimension:
+
+  L(a, a', k, y, g): expected living relatives of type k, aged a', sex g in {f,m},
+        for a focal individual of age a in year y.
+
+In the time-varying model (time_invariant = FALSE), the demographic operators
+U(t) and F(t) vary with calendar year t, so the kinship counts of a focal
+person of age a in year y depend on the entire history of rates from birth year
+(y - a) to year y. This is the cohort-period interaction that makes the
+time-varying model computationally intensive.
+
+DemoKin's kin2sex() function implements all of this internally and returns a
+data frame called kin_full (extracted from the list output as
+kin_out$kin_full), with one row per combination of:
+
+  (year, cohort, age_focal, age_kin, sex_kin, sex_focal, kin)
+
+Relevant columns for bereavement():
+
+  year:       calendar year (= cohort + age_focal in time-varying output)
+  age_focal:  age of the focal individual (0 to 100)
+  age_kin:    age of the relative (0 to 100)
+  sex_kin:    sex of the relative ("f" or "m", only in two-sex output)
+  sex_focal:  sex of focal individual ("f" or "m")
+  kin:        relationship type code (see Table A below)
+  living:     expected number of living relatives of this type and age [continuous]
+  dead:       expected number of relatives who have died [cumulative; see §4.2]
+
+
+── Table A: DemoKin kin type codes ──────────────────────────────────────────────
+
+  Code  Relationship             Notes
+  ----  -----------------------  -------------------------------------------------
+  m     Mother/Father            Single individual; expected count peaks near 1
+  d     Child (daughter/son)     Count increases with fertility
+  gm    Grandparent              Maternal grandmother by default in 1-sex model
+  gd    Grandchild
+  ggm   Great-grandparent
+  ggd   Great-grandchild
+  os    Older sibling            Older than focal at all focal ages
+  ys    Younger sibling          Younger than focal; count grows over focal's life
+  oa    Older aunt/uncle         Parent's older sibling
+  ya    Younger aunt/uncle       Parent's younger sibling
+  nos   Niece/nephew (older s.)  Sibling's older child
+  nys   Niece/nephew (younger)
+  coa   Cousin (older aunt)
+  cya   Cousin (younger aunt)
+
+In two-sex output, sex_kin distinguishes male and female relatives within each
+code. For example, "m" with sex_kin="f" is the mother; sex_kin="m" is the
+father. In practice DemoKin uses "m" for the maternal kin line and automatically
+tracks paternal kin via the two-sex algebra.
+
+
+── 2. THE BEREAVEMENT PROBLEM ───────────────────────────────────────────────────
+
+Given the kinship surface L(a, a', k, y, g), we want to answer:
+
+  "How many people in the population, of age a in year y, lose at least one
+   relative of type k during the year y?"
+
+This is a PERIOD bereavement estimate: a cross-sectional quantity for a given
+calendar year. It is NOT a life-course (cohort) cumulative measure. We make no
+claim about how many times a person has experienced bereavement across their
+life; only what fraction of the population experiences it within a single year.
+
+Formally, define:
+
+  q0(a, y, k) = P(focal person of age a in year y loses >=1 relative of type k
+                   during year y)
+
+The bereaved count is then:
+
+  B(a, y, k) = q0(a, y, k) x N(a, y)
+
+where N(a, y) is the number of focal individuals of age a alive in year y.
+
+Summing over focal ages gives the total bereaved count:
+
+  B(y, k) = sum_a [ q0(a, y, k) x N(a, y) ]
+
+And the bereaved share of the population:
+
+  b(y, k) = B(y, k) / N(y)    where N(y) = sum_a N(a, y)
+
+The key quantity to compute is q0(a, y, k). Three methods have been proposed
+in the literature; only the first is implemented in bereavement().
+
+
+================================================================================
+PART II — THE PRODUCT METHOD
+================================================================================
+
+── 3. DERIVATION OF THE PRODUCT FORMULA ─────────────────────────────────────────
+
+The product method (called "Kike's method" in internal project correspondence,
+after a collaborator) starts from an independence assumption: the deaths of
+different relatives during year y are independent events conditional on their
+age and sex. This is an approximation -- in reality, relatives share environments
+(infectious disease, conflict, famine) that induce positive correlation among
+deaths -- but it provides a clean closed-form estimator and behaves as an upper
+bound in the presence of positive death clustering (see §5.2 for the NegBin
+alternative that relaxes this assumption).
+
+Under independence, the probability that a specific relative of age a' and sex g
+survives year y is:
+
+  P(survives) = 1 - q(a', y, g)
+
+where q(a', y, g) is the age-sex-year-specific probability of dying.
+
+Now, L(a, a', k, y, g) is the expected (continuous) count of living relatives
+of type k, aged a', sex g, for a focal person of age a in year y. The key
+modelling step is to treat this expected count as if it were the actual count of
+independent individuals, each facing probability q(a', y, g) of dying. Under
+independence, the probability that all of them survive is:
+
+  P(all survive | kin aged a', sex g) = (1 - q(a', y, g))^{L(a, a', k, y, g)}
+
+The exponent is a continuous real number because L is continuous-valued (from
+the matrix model). The expression (1-q)^L is interpreted as exp(L x log(1-q)),
+the natural extension of the Binomial survival probability to non-integer counts.
+This is equivalent to evaluating the probability generating function (PGF) of a
+Poisson distribution with mean L at the point (1-q):
+
+  PGF_{Poisson(L)}(1-q) = exp(L x log(1-q)) = (1-q)^L
+
+This means: if the actual number of relatives at age a' is Poisson(L), the
+probability that all of them survive year y is exactly (1-q)^L under
+independence. The formula is therefore EXACT under the assumptions of Poisson-
+distributed kin counts and independence of deaths, not merely an approximation.
+
+Note: exp(L x log(1-q)) =/= exp(-Lq) unless q is small. The product formula
+uses the EXACT form (1-q)^L rather than the Poisson approximation exp(-Lq).
+The difference matters when q is large (old ages, high mortality, conflict).
+
+Extending over all ages a' of kin type k and both sexes g, under independence:
+
+  P(all kin of type k survive year y | focal age a) =
+    prod_{a'} prod_{g in {f,m}} (1 - q(a', y, g))^{L(a, a', k, y, g)}
+
+where the products run over all ages a' in {0,...,100} and sexes g present in
+kin_full. Rows with living = 0 contribute (1-q)^0 = 1 and drop out automatically.
+
+Therefore:
+
+  q0(a, y, k) = 1 - prod_{a', g} (1 - q(a', y, g))^{L(a, a', k, y, g)}   [Eq. 1]
+
+This is the core formula of bereavement(). In code (Steps 3-4 of the function):
+
+  # Step 3: per-cell contribution (one cell = one age_kin x sex_kin combination)
+  p0_cell = (1 - qx_kin)^living
+
+  # Step 4: product within each (year, age_focal, kin) group
+  p0 = prod(p0_cell)
+
+  # q0 = 1 - p0 is computed implicitly in Step 6:
+  bereaved = (1 - p0) x pop_focal
+
+
+── 4. YEAR ALIGNMENT AND THE 'living' vs. 'dead' COLUMNS ───────────────────────
+
+4.1  Which column to use
+
+kin_full contains both 'living' and 'dead' columns. The product method uses
+'living', not 'dead'. This is because:
+
+  - 'living' gives the expected kin alive at the START of year y for a focal
+    person of age a. Combined with q(a', y, g), this gives the expected deaths
+    during year y directly from Eq. 1.
+
+  - 'dead' in DemoKin output is a CUMULATIVE count: total deaths of kin type k
+    from the focal person's birth up to year y. It is NOT the period deaths
+    occurring specifically during year y.
+
+The product method therefore avoids any differencing of the dead column across
+consecutive years, which is what the Poisson method (§5.1) must do, and which
+requires kin_full for two consecutive years.
+
+4.2  Year alignment
+
+For a period estimate in year y:
+  - kin_full must be filtered to rows where year == y
+  - The living counts represent kin alive during year y
+  - q(a', y, g) must also refer to year y
+
+These must match: kin_full year = qx year = y. No offset is needed. This is
+in contrast to the Poisson method (§5.1), which uses dead counts from year y+1
+to approximate period deaths in year y (an intentional one-year offset arising
+from the cumulative nature of the dead column in DemoKin).
+
+
+── 5. ALTERNATIVE METHODS (context only; NOT implemented in bereavement()) ───────
+
+5.1  Poisson / Binomial method (Caswell, Margolis & Verdery)
+
+Uses the cumulative 'dead' column from kin_full, differenced across years to
+get approximate period deaths:
+
+  dead_period(a, y, k) = sum_{a'} [dead(a, a', k, y+1) - dead(a, a', k, y)]
+
+(This is why the Gaza pipeline uses year y+1 dead counts for year y bereavement.)
+
+For unconstrained kin (children, siblings, nieces...):
+  P(>=1 dies) = 1 - exp(-dead_period)    [Poisson: k -> 0 limit]
+
+For kin with a known fixed group size n (parents: n=2, grandparents: n=4):
+  P(>=1 dies) = 1 - (1 - dead_period/n)^n    [Binomial]
+
+Key differences from the product method:
+  - Uses DEAD counts (differenced) rather than LIVING counts + qx
+  - Requires kin_full for two consecutive years, not just year y
+  - Pools all kin ages into a single dead_period scalar before computing P,
+    losing the age distribution of kin
+  - The product method preserves the full age distribution and applies
+    age-specific qx, making it more appropriate for cause-of-death analysis
+    where cause-specific qx varies strongly by age
+
+5.2  Negative Binomial method (Moretti; Alburez-Gutierrez et al. 2024)
+
+Relaxes the independence assumption by modelling unobserved frailty
+heterogeneity: families with high baseline mortality risk lose multiple members,
+so deaths cluster within families. If kin deaths follow a Negative Binomial
+distribution with mean mu = dead_period and overdispersion parameter k (the
+variance of the Gamma frailty distribution), then:
+
+  P(>=1 dies) = 1 - (1 + k x dead_period)^{-1/k}
+
+As k -> 0: (1 + k x dead_period)^{-1/k} -> exp(-dead_period), recovering Poisson.
+As k -> inf: (1 + k x dead_period)^{-1/k} -> 1, meaning everyone is bereaved.
+
+The NegBin arises as a Poisson-Gamma mixture: if deaths ~ Poisson(lambda x theta)
+where theta ~ Gamma(mean=1, variance=k), then k is the frailty variance.
+A larger k means more death clustering within kin networks.
+
+Empirical calibration (Alburez-Gutierrez et al. 2024, Sci. Adv. 10, eado6951):
+  OCHA data showed 61% of Gaza deaths (Oct-Nov 2023) concentrated in 79% of
+  multi-fatality families. Gamma frailty simulations recovered:
+    k ~  7 for simulated families of size 20
+    k ~ 12 for simulated families of size 40
+    k ~ 28 for simulated families of size 60
+  Since kin groups in the study are much smaller (parents n~2, siblings n~4-6),
+  the calibrated k was adjusted proportionally:
+    k = 0.5 -> near-Poisson clustering (parents, n~2)
+    k = 2.0 -> moderate clustering     (siblings/children, n~4-6)
+    k = 5.0 -> strong clustering        (extended kin, n~10-15)
+
+Relation to the product method:
+  The product method implicitly assumes k = 0 (independent deaths). When k > 0,
+  the NegBin gives FEWER bereaved persons for large kin groups (clustering
+  concentrates multiple losses in fewer families, so fewer focal persons lose
+  anyone). For small kin groups (parents, n~2), the difference is negligible.
+  The product method therefore provides an upper bound on bereavement count
+  in populations where death clustering is present (conflict, epidemic, famine).
+
+5.3  Combining q0 across kin types (Nuclear / Extended groupings)
+
+When computing "P(lose any member of a nuclear family in year y | focal age a)",
+the union-probability formula applies:
+
+  q0_group(a, y) = 1 - prod_{k in group} (1 - q0(a, y, k))
+
+This uses inclusion-exclusion under the assumption that losses of different kin
+types are independent (approximate). In the Gaza sensitivity script this is:
+
+  summarise(q0 = 1 - prod(1 - q0), .by = c(year, age_focal, method, kin_group))
+
+This combination must be performed AFTER computing per-kin-type q0 values and
+is NOT inside bereavement(). The caller does it from the returned output.
+
+
+================================================================================
+PART III — PERIOD vs. COHORT INTERPRETATION
+================================================================================
+
+── 6. PERIOD PERSPECTIVE (what this function computes) ──────────────────────────
+
+The function computes PERIOD bereavement estimates. In year y, all people aged
+a who are currently alive (across all birth cohorts born in year y-a) are treated
+as if they had the same kinship surface -- the period kinship surface for year y.
+DemoKin supports this by allowing output_period in kin2sex() calls.
+
+Period bereavement in year y for kin type k:
+  B(y, k) = sum_a [ q0(a, y, k) x N(a, y) ]
+
+Interpretation: "In year y, B(y, k) people across all ages lose at least one
+relative of type k." This is the natural quantity for the cross-sectional social
+burden of bereavement in a given calendar year.
+
+── 7. COHORT PERSPECTIVE (not implemented; for context) ─────────────────────────
+
+A cohort bereavement estimate follows people born in year c and asks: "By age a,
+what fraction have ever lost a relative of type k?" This requires accumulating
+q0 over time while accounting for survivor selection among focal individuals.
+DemoKin supports cohort output via output_cohort, but bereavement() is not
+designed for this. A cohort version would need to: (a) use cohort-specific
+kin_full rows (identified by cohort column, not year column); (b) compute
+cumulative P(at least one loss by age a) = 1 - prod_{t=0}^{a} (1 - q0(t, c+t, k));
+(c) apply a different population denominator (cohort size at birth, not period
+population). This is a substantively distinct function.
+
+
+================================================================================
+PART IV — THE TWO-SEX EXTENSION
+================================================================================
+
+── 8. TWO-SEX KINSHIP AND SEX-SPECIFIC MORTALITY ────────────────────────────────
+
+In the two-sex model (kin2sex output), kin_full has a sex_kin column with values
+"f" (female kin) and "m" (male kin). The product formula extends naturally:
+
+  q0(a, y, k) = 1 - prod_{a'} prod_{g in {f,m}} (1 - q(a', y, g))^{L(a, a', k, y, g)}
+
+This requires sex-specific mortality: q_f(a', y) for female kin and q_m(a', y)
+for male kin. Male mortality is systematically higher than female mortality at
+most ages in most populations (male excess mortality); failing to distinguish
+them would underestimate bereavement through male relatives and overestimate it
+through female relatives.
+
+In bereavement(), two-sex mode is auto-detected:
+
+  two_sex = ("sex_kin" %in% names(kin_full)) AND (n_distinct(kin_full$sex_kin) > 1)
+
+When two_sex = TRUE, the function requires qx to be sex-specific. The pop
+(focal population) does NOT need to be sex-specific in two-sex mode. The reason:
+all focal individuals in a given kin2sex run share the same sex_focal (e.g., "f").
+The pop argument tells us how many focal women of age a are alive in year y.
+Passing total population (male + female) as pop is a valid approximation when the
+goal is a population-wide bereaved count, as it applies the female-focal q0 to
+all individuals. This is noted explicitly in the demo script comments.
+
+The two-sex product (for a given focal age a, year y, kin type k) iterates over
+all rows in kin_full that match (age_focal=a, year=y, kin=k). Each row has a
+specific (age_kin=a', sex_kin=g) combination, and the function joins on (year,
+age_kin, sex_kin) to retrieve the sex-specific qx_kin. This is Step 2 of the
+function. The product in Step 4 then automatically covers all (a', g) pairs.
+
+
+================================================================================
+PART V — COMPUTATIONAL ARCHITECTURE
+================================================================================
+
+── 9. STEP-BY-STEP COMPUTATION IN bereavement() ─────────────────────────────────
+
+The function has six numbered steps plus two internal helpers. Here is a precise
+account of each.
+
+STEP 0: Input validation and mode detection
+  - Checks that kin_full has required columns: kin, age_kin, age_focal, year, living
+  - Detects two-sex mode: two_sex = ("sex_kin" %in% names(kin_full)) AND
+    n_distinct(kin_full$sex_kin) > 1
+  - Filters kin_full to output_year if specified. Error if no rows remain.
+
+STEP 1: Normalise qx and pop to canonical long form
+  Both qx and pop accept three input formats (handled by internal helper .to_long()):
+
+    a) Matrix:     rows = ages 0-100 (integer rownames), cols = years (integer colnames)
+                   -> pivoted to long form: (age, year, value)
+
+    b) Data frame: must have columns year, age, and the value column (qx or pop)
+                   -> already in long form; column types coerced to integer
+
+    c) Named list: list(f=<matrix or df>, m=<matrix or df>)
+                   -> each element processed by .to_long() and bound with a sex column
+
+  Helper .parse_input() calls .to_long() and enforces:
+    - If two_sex=TRUE and require_sex=TRUE (for qx): must have a sex column
+    - If two_sex=FALSE: must NOT have multiple sex values
+  The require_sex flag is FALSE for pop (sex column optional even in two-sex mode).
+
+STEP 2: Join qx onto kin_full
+  The canonical long qx is renamed: age -> age_kin, qx -> qx_kin, sex -> sex_kin.
+  A left join is performed:
+
+    kin_full LEFT JOIN qx ON (year, age_kin)              [one-sex mode]
+    kin_full LEFT JOIN qx ON (year, age_kin, sex_kin)     [two-sex mode]
+
+  After joining, any NA in qx_kin means qx did not cover some (age, year, sex)
+  combination present in kin_full -> stop with informative message.
+
+  Also check for the terminal age problem: if qx_kin == 1 AND living > 0 in any
+  row -> stop (see §10 for explanation and fix).
+
+STEP 3: Per-cell survival probability (the innermost factor of Eq. 1)
+  For each row in kin_work (one row = one combination of age_focal, age_kin,
+  kin type, year, and optionally sex_kin):
+
+    p0_cell = (1 - qx_kin)^living
+
+  When living = 0: p0_cell = 1^0... wait, (1-q)^0 = 1 regardless of q. Correct.
+  When living > 0 and qx_kin > 0: p0_cell < 1 (mortality reduces survival prob).
+  When qx_kin = 0 (certain survival): p0_cell = 1 regardless of living. Correct.
+
+STEP 4: Product over all kin ages (and sexes) per (year, age_focal, kin)
+  Groups: c("year", "age_focal", "kin"), plus "sex_focal" if present in kin_work.
+  Within each group:
+
+    p0 = prod(p0_cell)
+
+  This is the probability that ALL relatives of type k survive year y for a focal
+  person of age a. The product runs over all rows in the group, i.e., all
+  (age_kin, sex_kin) combinations for that kin type. This corresponds exactly to
+  the double product in Eq. 1.
+
+STEP 5: Join focal population
+  pop_long is renamed: age -> age_focal, pop -> pop_focal, sex -> sex_focal.
+  Join keys:
+    (year, age_focal)             [if no sex column in pop_join]
+    (year, age_focal, sex_focal)  [if sex column present]
+
+  After joining, each row of p0 has a pop_focal value = N(a, y).
+
+STEP 6: Compute bereaved and bereaved_prop
+  Total population per year (denominator):
+    pop_total = sum(pop_focal) grouped by year = N(y)
+
+  Then:
+    bereaved      = (1 - p0) x pop_focal    = q0(a,y,k) x N(a,y)
+    bereaved_prop = bereaved / pop_total     = q0(a,y,k) x N(a,y) / N(y)
+
+  Note: bereaved_prop is a per-age-per-kin quantity. Summing bereaved_prop
+  over age_focal (for a fixed year and kin type) gives the total share of the
+  population bereaved for that kin type. This works because:
+
+    sum_a bereaved_prop(a,y,k) = sum_a [q0(a,y,k) x N(a,y)] / N(y)
+                                = B(y,k) / N(y)   = b(y,k)
+
+  Output is a tidy data frame sorted by (year, kin, age_focal) with columns:
+    year, age_focal, kin, bereaved, bereaved_prop
+
+
+── 10. THE TERMINAL AGE PROBLEM ─────────────────────────────────────────────────
+
+Most life tables assign qx = 1 at the open age group (OAG, typically age 100+),
+meaning everyone in this age class is assumed to die within the year. In DemoKin's
+Swedish data, swe_px[age=100, year] = 0 exactly, so 1 - swe_px[100,] = 1.
+
+If qx_kin = 1 for any age where living > 0, then:
+
+  p0_cell = (1 - 1)^living = 0^living = 0   [for any living > 0]
+
+and the product p0 collapses to 0 regardless of all other kin ages. This makes:
+
+  q0(a, y, k) = 1 - 0 = 1  for EVERY focal age a with any kin of age 100+
+
+i.e., every focal person is predicted to lose kin of type k, which is wrong.
+
+The correct fix is to replace qx at the terminal age with a continuous-time
+approximation. If mx is the force of mortality (hazard rate) in the OAG, then
+under a constant force of mortality model:
+
+  qx_terminal = 1 - exp(-mx_terminal)
+
+When only px is available and px_terminal > 0: mx = -log(px), so
+qx = 1 - exp(-(-log(px))) = 1 - px. This is circular and fails when px = 0.
+When px_terminal = 0, we need mx from an external source.
+
+Practical solutions:
+
+  a) Quick fix (demo use only): replace px = 0 with 1e-6 before computing qx.
+     qx = 1 - pmax(px, 1e-6)  ->  qx <= 1 - 1e-6 < 1. Avoids the error.
+     Justification: at age 100+, the typical annual mortality rate is on the order
+     of 50% or more, so qx ~ 0.5-0.8. The 1e-6 replacement gives qx ~ 0.999999,
+     which overestimates mortality at age 100 but affects bereavement estimates
+     very little because living kin at age 100 is very close to 0 in any
+     realistic scenario. Used in demo_bereavement_demokin.R.
+
+  b) Formal fix (for analysis): use DemoTools::lt_single_mx(nMx, Age, Sex, OAG=FALSE)
+     to convert mortality rates mx -> full life table nqx via the Reed-Merrell
+     method or HMD interpolation. Then override the last age: px[101] = exp(-mx[101]).
+     This is the approach used in Gaza pipeline scripts 1-8.
+
+The bereavement() function does NOT silently fix qx = 1 internally. It stops
+with an informative error explaining the problem and fix. This is intentional:
+silent capping would mask data quality issues in formal analyses.
+
+
+── 11. INTERNAL HELPERS ─────────────────────────────────────────────────────────
+
+.to_long(x, value_col, sex_label = NULL)
+  Converts a single object (matrix or data frame) to a long data frame with
+  columns (age [integer], year [integer], [sex], value_col). For matrices, numeric
+  dimnames are required (used as age and year identifiers). If sex_label is non-NULL
+  and the result has no sex column, a constant sex column is added (used when calling
+  for a single sex within .parse_input).
+
+.parse_input(x, value_col, two_sex, require_sex = TRUE)
+  Dispatches on the type of x:
+    - Named list(f=..., m=...): calls .to_long() on each, adds sex="f"/"m", binds rows
+    - Matrix or data frame: calls .to_long() directly
+  Validates sex column presence against two_sex and require_sex flags.
+  Returns a canonical long data frame.
+
+These helpers are not exported. They exist to allow bereavement() to accept
+multiple input formats without cluttering the main function body.
+
+
+================================================================================
+PART VI — INPUT AND OUTPUT SPECIFICATION
+================================================================================
+
+── 12. FUNCTION SIGNATURE ───────────────────────────────────────────────────────
+
+bereavement(
+  kin_full,
+  qx,
+  pop,
+  output_year = NULL
+)
+
+
+── 13. kin_full ─────────────────────────────────────────────────────────────────
+
+Source: kin_out$kin_full from DemoKin::kin() or DemoKin::kin2sex().
+
+Required columns:
+  kin        character  relationship type code (Table A above)
+  age_kin    integer    age of the relative (0-100)
+  age_focal  integer    age of the focal individual (0-100)
+  year       integer    calendar year
+  living     numeric    expected number of living relatives [continuous, >= 0]
+
+Optional columns (auto-detected):
+  sex_kin    character  sex of relative ("f", "m") -- triggers two-sex mode
+  sex_focal  character  sex of focal ("f", "m")    -- used as grouping variable if present
+  cohort     integer    ignored; passed through if present
+  dead       numeric    ignored by the product method
+
+In a time-invariant single-sex model (kin() output), the year column may have
+a single value or represent the age of the focal; output_year=NULL processes
+whatever years are present.
+
+In a time-varying two-sex model (kin2sex() with time_invariant=FALSE), kin_full
+can be very large (tens of millions of rows for the full 1900-2018 Swedish data).
+Use output_year to restrict to specific years before passing to bereavement().
+
+
+── 14. qx (and pop, same format rules) ──────────────────────────────────────────
+
+Accepted formats:
+
+  a) Matrix (single sex or sex-agnostic):
+     - dim: (101 ages) x (n_years)
+     - rownames: character or integer ages 0-100
+     - colnames: character or integer years matching those in kin_full
+
+  b) Long data frame, single sex:
+     - Required columns: year (integer), age (integer), qx (numeric)
+
+  c) Long data frame, two-sex:
+     - Required columns: year (integer), age (integer), sex ("f"/"m"), qx (numeric)
+
+  d) Named list of two-sex matrices:
+     - list(f = <101 x n matrix>, m = <101 x n matrix>)
+     - Each element in format (a)
+
+Values: probabilities in [0, 1). Must NOT include qx = 1 at ages where living > 0
+(see §10). Supply qx for all ages 0-100 and all years in kin_full; any gap
+produces an NA and a stop error.
+
+All-cause vs. cause-specific: qx can be all-cause or cause-specific. When
+cause-specific, q0(a, y, k) is the probability of losing kin to that specific
+cause. This is one advantage of the product method over Poisson/NegBin: those
+methods use the 'dead' column in kin_full which is always all-cause.
+
+
+── 15. pop ──────────────────────────────────────────────────────────────────────
+
+Same format as qx but the value column is named "pop". Sex column is optional
+even in two-sex mode (require_sex = FALSE). Values are non-negative real numbers
+(population counts).
+
+The pop argument affects only the scale-up steps (5-6). Setting pop to a matrix
+of all 1s gives bereaved = q0 and bereaved_prop = q0 / n_ages, which is useful
+for inspecting the raw probability surface without a specific population.
+
+
+── 16. output_year ──────────────────────────────────────────────────────────────
+
+NULL:             compute for all years present in kin_full
+Integer vector:   compute only for those years
+
+Error if any requested year is absent from kin_full. The function does not
+interpolate or extrapolate the kinship surface; the caller must ensure kin_full
+covers the requested years.
+
+
+── 17. OUTPUT DATA FRAME ────────────────────────────────────────────────────────
+
+One row per (year, age_focal, kin). Sorted by (year, kin, age_focal).
+
+  year          integer   calendar year
+  age_focal     integer   age of focal individual (0-100)
+  kin           character relationship type code
+  bereaved      numeric   q0(a,y,k) x N(a,y) = expected bereaved at focal age a
+  bereaved_prop numeric   bereaved / N(y) = per-capita contribution to annual rate
+
+To aggregate:
+  Total bereaved per kin type per year:  summarise(bereaved = sum(bereaved), .by=c(year,kin))
+  Total bereaved share per kin type:     summarise(bereaved_prop = sum(bereaved_prop), .by=c(year,kin))
+  Nuclear family union:                  1 - prod(1 - q0) per (year, age_focal), computed externally
+
+sex_focal is retained as an additional column when present in kin_full.
+
+
+================================================================================
+PART VII — ERROR HANDLING DESIGN
+================================================================================
+
+── 18. INTENTIONAL ERRORS ───────────────────────────────────────────────────────
+
+The function fails loudly with descriptive messages rather than silently wrong
+results. Bereavement analysis is sensitive to input quality; a quietly capped
+qx or silently dropped NA would produce plausible-looking but incorrect numbers.
+
+Error conditions and their rationale:
+
+  1. Missing required columns in kin_full
+     -> stop("kin_full is missing required columns: ...")
+
+  2. output_year not found in kin_full$year
+     -> stop("output_year = X not found in kin_full$year...")
+     Rationale: kin_full cannot be extended inside the function; the caller
+     must supply the correct kin2sex output for those years.
+
+  3. NA values in qx after joining
+     -> stop("N NA values in qx after joining onto kin_full...")
+     Most common cause: qx matrix covers fewer years or ages than kin_full.
+
+  4. qx = 1 with living > 0 (terminal age problem)
+     -> stop("qx = 1 detected at age(s) X with living kin > 0...")
+     Includes explanation of the collapse mechanism and the fix.
+     Does NOT silently cap; caller must fix before calling.
+
+  5. qx not sex-specific in two-sex mode
+     -> stop("kin_full has two sexes but qx has no 'sex' column...")
+
+  6. qx is sex-specific in one-sex mode
+     -> stop("kin_full is single-sex but qx contains multiple sexes...")
+
+  7. Format errors (missing dimnames, wrong list structure, etc.)
+     -> stop() from .to_long() or .parse_input() with informative message
+
+
+================================================================================
+PART VIII — RELATIONSHIP TO THE LITERATURE AND KEY REFERENCES
+================================================================================
+
+── 19. KEY REFERENCES ───────────────────────────────────────────────────────────
+
+Caswell, H. (2019). The formal demography of kinship: A matrix formulation.
+  Demographic Research, 41, 679-712.
+  [Introduces the matrix kinship model. Defines U, F operators and kin vectors.
+   Derives expected kin counts from matrix recursion. Single-sex, time-invariant.]
+
+Caswell, H. (2021). The formal demography of kinship II: Multistate models,
+  parity, and sibship. Demographic Research, 45, 517-564.
+  [Extends to multistate; justifies treating kin counts as continuous.]
+
+Caswell, H. (2022). Formal demography of kinship IV: Two-sex models.
+  Demographic Research, 47, 359-396.
+  [Extends kinship model to two sexes using separate U_f, U_m, F_f, F_m.
+   Justifies kin2sex(). Introduces GKP factors and androgynous approximations.
+   Section 5 of this paper is the demographic basis for the two-sex extension
+   in bereavement().]
+
+Caswell, H., Margolis, R., & Verdery, A. M. (2023).
+  Kin bereavement in the United States.
+  [Formalises the Poisson/Binomial bereavement estimator using dead counts.
+   The distinction between their 'dead' column method and the product method's
+   'living' column method is the core methodological difference between the
+   two estimators.]
+
+Alburez-Gutierrez, D. et al. (2024).
+  Sci. Adv. 10, eado6951. doi:10.1126/sciadv.ado6951
+  [Application of bereavement estimation to conflict mortality in Gaza.
+   Introduces the NegBin extension. Calibrates overdispersion k from OCHA data.
+   Figure S13 compares product/Poisson/NegBin sensitivity to k. The product
+   method is called "Kike's method" in the paper's supplementary material.]
+
+Goodman, L., Keyfitz, N., & Pullum, T. (1974).
+  Family formation and the frequency of various kinship relationships.
+  Theoretical Population Biology, 5, 1-27.
+  [Origin of GKP multipliers. Historical basis for approximating two-sex kin
+   counts from one-sex models without running the full two-sex algebra.]
+
+Preston, S., Heuveline, P., & Guillot, M. (2001).
+  Demography: Measuring and Modeling Population Processes. Blackwell.
+  [Standard reference for life table construction, qx derivation, and the
+   constant force of mortality model used in the terminal age fix.]
+
+
+================================================================================
+PART IX — INTEGRATION INTO DEMOKIN
+================================================================================
+
+── 20. WHAT NEEDS TO BE DONE FOR PACKAGE INTEGRATION ──────────────────────────
+
+For formal integration into the DemoKin package:
+
+  a) Roxygen2 documentation:
+     Write @param, @return, @examples, @references, @export blocks.
+     @examples should use only DemoKin built-in data (see demo script).
+
+  b) Package imports:
+     Replace library(tidyverse) with individual imports in DESCRIPTION:
+     dplyr, tidyr, tibble. Use dplyr:: / tidyr:: / tibble:: prefixes throughout
+     or @importFrom in roxygen block for each symbol used.
+
+  c) testthat tests:
+     The existing test script (9_test_bereavement_function.R in the Gaza repo)
+     defines five tests; convert to formal testthat unit tests:
+       Test 1: two-sex long df input, single year
+       Test 2: matrix list input, multiple years
+       Test 3: terminal qx = 1 triggers stop()      [expect_error]
+       Test 4: NA in qx triggers stop()             [expect_error]
+       Test 5: numerical identity (max diff 1.11e-16)
+
+  d) method argument (most natural extension):
+     Add method = c("product", "poisson", "negbin") argument.
+     "poisson": implement Caswell-Margolis-Verdery dead-count method (requires
+                kin_full for year y and y+1; add k argument that defaults to 0)
+     "negbin":  add k argument for overdispersion
+
+  e) Combined kin groups:
+     Optional 'groups' argument: a named list of kin code vectors. For each group,
+     compute union probability 1 - prod(1 - q0_k) before aggregating. Return
+     both individual and grouped rows.
+
+  f) Male focal model:
+     Currently the caller runs kin2sex() separately for sex_focal="f" and "m" and
+     calls bereavement() twice. A convenience wrapper that runs both and combines
+     (weighted by male and female population shares) would be useful.
+
+
+── 21. DESIGN PHILOSOPHY ────────────────────────────────────────────────────────
+
+The function does exactly one thing: apply the product formula to (kin_full, qx,
+pop) and return bereaved counts. It does not run kin2sex(), does not compute
+life tables, does not produce plots, and has no side effects. This minimal scope
+makes the function composable (run inside sensitivity loops with different qx),
+testable (the formula is trivially verifiable), and fast (no redundant computation).
+
+The flexible input formats (matrix / long df / named list) serve two use cases:
+  1. New users: matrices with dimnames are the most natural format when working
+     directly with DemoKin built-in data or HMD files.
+  2. Pipeline users: long data frames in tidyverse style, already prepared from
+     larger demographic data workflows.
+
+The strict error handling (no silent failures) reflects the context: bereavement
+estimates are used in policy-relevant demographic analyses where silently wrong
+numbers are more harmful than an explicit stop() that forces the user to inspect
+their inputs.
+
+================================================================================
+END OF HANDOFF
+================================================================================
