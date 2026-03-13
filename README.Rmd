@@ -34,22 +34,22 @@ A **period bereavement estimate** answers the question: *In a given calendar yea
 Formally, for a focal individual of age *a* in year *y*, define:
 
 ```
-q0(a, y, k) = P(focal person loses ≥1 relative of type k during year y)
+b(a, y, k) = P(focal person loses ≥1 relative of type k during year y)
 ```
 
-The number of bereaved people of age *a* in year *y* is then:
+where *b* stands for the **bereavement probability** (not to be confused with *q_x*, the probability of dying used as input). The number of bereaved people of age *a* in year *y* is then:
 
 ```
-B(a, y, k) = q0(a, y, k) × N(a, y)
+B(a, y, k) = b(a, y, k) × N(a, y)
 ```
 
 where `N(a, y)` is the number of people of age *a* alive in year *y*. Summing over all ages gives the total bereaved count for kin type *k* in year *y*.
 
-### The kinship surface and DemoKin
+### The kinship structure and DemoKin
 
-To compute `q0`, we first need to know how many living relatives of each type a person of age *a* is expected to have in year *y* — and how old those relatives are. This is the **kinship surface**, a central concept in formal demography.
+To compute `q0`, we first need to know how many living relatives of each type a person of age *a* is expected to have in year *y* — and how old those relatives are. This is the **kinship structure**, a central concept in formal demography.
 
-Caswell (2019, 2022) showed that the kinship surface can be derived from a matrix population model. Given age-specific survival probabilities and fertility rates, the model tracks expected kin counts through the recursive structure of family trees. For example: the expected number of living mothers aged *a'* for a focal person of age *a* in year *y* depends on fertility rates *a* years ago and survival rates in every year since.
+Caswell (2019, 2022) showed that the kinship structure can be derived from a matrix population model. Given age-specific survival probabilities and fertility rates, the model tracks expected kin counts through the recursive structure of family trees. For example: the expected number of living mothers aged *a'* for a focal person of age *a* in year *y* depends on fertility rates *a* years ago and survival rates in every year since.
 
 The `DemoKin` package implements this model in R. Its `kin2sex()` function runs a **two-sex, time-varying** version of the model, incorporating separate male and female demographic rates that can change over time. The output is a data frame `kin_full` with one row per combination of:
 
@@ -80,20 +80,29 @@ Because `living` is derived from a deterministic matrix model, it is a **continu
 
 ### The product formula
 
-Given the kinship surface, how do we compute `q0(a, y, k)`?
+Given the kinship structure, how do we compute `b(a, y, k)`?
 
-`bereavement()` uses the **product method** (also called the "Kike method"). It rests on two assumptions:
+`bereavement()` uses the **product method** (also called the "Kike method"). The only assumption it requires is that the deaths of different relatives during year *y* are **independent** given their age and sex.
 
-1. The deaths of different relatives during year *y* are **independent** given their age and sex.
-2. The actual number of relatives at each age follows a **Poisson distribution** with mean equal to `living`.
+Under independence, if there were exactly *K* relatives of a given age-sex profile, the probability that all of them survive year *y* would be the familiar binomial expression `(1 - q)^K`. The difficulty is that `living` — the expected kin count returned by DemoKin — is a **continuous real number**, not an integer. It is the expected value of a random variable, not an observed count.
 
-Under these assumptions, the probability that a specific cohort of `living` relatives of age *a'* and sex *g* all survive year *y* is:
+**Why `living` is continuous and where Poisson enters.** DemoKin implements a deterministic matrix population model whose solution gives the *mean* number of relatives at each age. In the underlying stochastic process (a multitype branching process), the number of relatives of a given type converges, for large populations, to a **Poisson distribution** with mean equal to `living`. This is a consequence of the law of rare events: each relative's existence depends on a long chain of independent demographic events (surviving childbirth, surviving to reproductive age, surviving to the focal's birth year, etc.), and such chains produce Poisson-distributed counts in the limit.
+
+**The point-mass approximation.** The product formula extends `(1 - q)^K` to continuous `living` by substituting the expected value for the random variable — treating the Poisson-distributed count as if it were fixed at its mean:
 
 ```
-(1 - q(a', y, g)) ^ living(a, a', k, y, g)
+P(all living relatives of this age-sex profile survive) ≈ (1 - q) ^ living
+                                                         = exp(living × log(1 - q))
 ```
 
-where `q(a', y, g)` is the age-sex-year-specific probability of dying. The exponent is continuous because `living` is continuous; it is interpreted as `exp(living × log(1 - q))`, which is the probability generating function of a Poisson distribution evaluated at `(1 - q)`. This expression is **exact** (not an approximation) under the Poisson + independence assumptions.
+This is a **point-mass (mean-field) approximation**, not an exact result. If we used the full Poisson distribution exactly, the correct expression via the probability generating function `G(z) = exp(μ(z-1))` evaluated at `z = (1-q)` would be:
+
+```
+P(all survive) [Poisson-exact] = exp(-living × q)          ← PGF of Poisson at (1-q)
+P(all survive) [product method] = exp(living × log(1 - q)) ← point-mass approximation
+```
+
+These differ because `log(1-q) ≈ -q` only for small *q*. For typical demographic mortality levels — annual death probabilities in the range 0.001 to 0.05 — the two are numerically indistinguishable. For very high mortality (conflict, famine, pandemic), they diverge: the Poisson-exact formula yields a slightly higher bereavement probability than the product formula. The product method is therefore a valid and widely-used approximation for populations under normal or moderately elevated mortality, and a conservative lower bound under extreme mortality.
 
 Taking the product over all ages *a'* and both sexes *g*:
 
@@ -105,12 +114,12 @@ P(all kin of type k survive | focal age a, year y)
 Therefore:
 
 ```
-q0(a, y, k) = 1 - ∏_{a', g} (1 - q(a', y, g)) ^ living(a, a', k, y, g)
+b(a, y, k) = 1 - ∏_{a', g} (1 - q(a', y, g)) ^ living(a, a', k, y, g)
 ```
 
 Ages with `living = 0` contribute `(1-q)^0 = 1` and drop out of the product automatically. This means the function only needs the full `living` surface and age-sex-specific `qx` values; it does not require any knowledge of the actual family structure of any individual.
 
-> **The independence assumption matters.** In populations where death clusters within families (conflict, epidemic, famine), the product method overestimates the number of bereaved people, because it spreads losses evenly rather than concentrating them in fewer families. For populations with such clustering, a Negative Binomial extension exists (Alburez-Gutierrez et al. 2024) but is not yet implemented here.
+> **Two sources of approximation error.** First, the point-mass formula replaces the Poisson kin count with its mean, which underestimates bereavement slightly when *q* is large (see above). Second, the independence assumption fails in populations where death clusters within families (conflict, epidemic, famine): deaths become positively correlated, so losses concentrate in fewer families than the formula predicts — meaning the formula both under- and over-counts depending on the quantity of interest (total bereaved vs. per-family depth of loss). For populations with such clustering, a Negative Binomial extension exists (Alburez-Gutierrez et al. 2024) but is not yet implemented here.
 
 ---
 
@@ -143,7 +152,7 @@ pf <- swe_px    # female survival:  101 ages × 119 years
 ff <- swe_asfr  # female fertility: 101 ages × 119 years
 ```
 
-`DemoKin`'s built-in data are female only. The two-sex model requires male rates as well. Following the DemoKin vignette (Caswell 2022), we construct synthetic male rates:
+`DemoKin`'s built-in data are female only. The two-sex model requires male rates as well. Following the [DemoKin two-sex time-varying vignette](https://ivanwilli.github.io/DemoKin/articles/1_4_TwoSex_TimeVarying_Age.html), we construct synthetic male rates:
 
 ```{r male-rates}
 n_ages <- nrow(pf)
@@ -185,7 +194,7 @@ Male survival is lower at all ages. Male fertility peaks about 5 years later tha
 
 ---
 
-## Step 2 — Compute the kinship surface with `kin2sex()`
+## Step 2 — Compute the kinship structure with `kin2sex()`
 
 `kin2sex()` is the two-sex kinship model in `DemoKin`. It takes survival and fertility matrices for both sexes and returns, for every (focal age × year × kin type × kin age × kin sex) combination, the expected number of living and dead relatives.
 
@@ -249,9 +258,9 @@ kin_full |>
   head(10)
 ```
 
-Each row describes one (age × sex) slice of a kin type for a particular focal person profile. The `living` column is the expected number of relatives with that exact age and sex still alive. The `dead` column is the cumulative deaths of that kin type up to that year (not period deaths — see the HANDOFF for details).
+Each row describes one (age × sex) slice of a kin type for a particular focal person profile. The `living` column is the expected number of relatives with that exact age and sex still alive.
 
-### Visualising the kinship surface
+### Visualising the kinship structure
 
 To build intuition, let's look at the expected number of living relatives by focal age for a single year:
 
@@ -276,7 +285,7 @@ kin_full |>
   )
 ```
 
-This is the kinship surface that feeds into the bereavement calculation. For example, a 30-year-old Swedish woman in 1980 expected to have roughly one living parent, no grandchildren yet, several siblings, and a growing number of children.
+This is the kinship structure that feeds into the bereavement calculation. For example, a 30-year-old Swedish woman in 1980 expected to have roughly one living parent, no grandchildren yet, several siblings, and a growing number of children.
 
 ---
 
@@ -290,18 +299,25 @@ qx = 1 - px
 
 **Terminal age problem.** `swe_px[age = 100] = 0` because everyone in the open age group (100+) is assumed to die within the year in this life table. That gives `qx = 1`, which collapses the product formula to zero for any focal person with living kin aged 100+, and triggers an error in `bereavement()`.
 
-The fix is to ensure `qx < 1` at the terminal age. We do this by replacing `px = 0` with a small positive value before computing `qx`. In a formal analysis, the correct approach is to derive `qx` from the force of mortality `mx` using `DemoTools::lt_single_mx()`, which handles the open age group properly.
+The fix is to approximate `qx` at age 100 using the **force of mortality** (`mx`) from age 99. The standard relationship between `px` and `mx` under a constant-hazard assumption within the age interval is `qx = 1 - exp(-mx)`, or equivalently `mx = -log(px)`. Since `px[99]` is well-defined, we compute `mx[99] = -log(px[99])` and use it as our approximation for `mx[100]`, giving `qx[100] = 1 - exp(-mx[99])`. This assumes a roughly constant force of mortality at the oldest ages, which is reasonable for period life tables. In a formal analysis, use `DemoTools::lt_single_mx()` to derive qx from mx for all ages consistently.
 
 ```{r compute-qx}
-# Replace any px = 0 with 1e-6 before computing qx, to avoid qx = 1 at age 100
-qx_f <- 1 - pmax(pf, 1e-6)
-qx_m <- 1 - pmax(pm, 1e-6)
+# qx = 1 - px for ages 0-99 (exact)
+qx_f <- 1 - pf
+qx_m <- 1 - pm
+
+# Terminal age (row 101, age 100): px = 0 by life table convention → qx = 1.
+# Approximate using mx from age 99: qx[100] = 1 - exp(-mx[99]) = 1 - px[99]
+mx_f_99 <- -log(pf[100, ])   # force of mortality at age 99 (row index 100)
+mx_m_99 <- -log(pm[100, ])
+qx_f[101, ] <- 1 - exp(-mx_f_99)
+qx_m[101, ] <- 1 - exp(-mx_m_99)
 
 dimnames(qx_f) <- dimnames(pf)
 dimnames(qx_m) <- dimnames(pm)
 
-range(qx_f)  # female qx: min and max
-range(qx_m)  # male   qx: min and max
+range(qx_f)
+range(qx_m)
 ```
 
 ---
@@ -311,7 +327,7 @@ range(qx_m)  # male   qx: min and max
 `swe_pop` contains observed female population counts for Sweden by age and year. This is the population of focal women — we need it to convert per-capita probabilities into head counts:
 
 ```
-B(a, y, k) = q0(a, y, k) × N(a, y)
+B(a, y, k) = b(a, y, k) × N(a, y)
 ```
 
 ```{r pop-data}
@@ -335,8 +351,8 @@ colSums(pop_mat)[as.character(c(1950, 1970, 1990, 2010))] |>
 | Argument | Description |
 |----------|------------|
 | `kin_full` | Data frame from `kin2sex()` or `kin()` |
-| `qx` | Probability of dying. Named list `list(f = ..., m = ...)` because `kin_full` has sex-specific kin |
-| `pop` | Focal population counts (female here). A single matrix without a sex column; applies to all focal women |
+| `qx` | Probability of dying. Named list `list(f = ..., m = ...)` in two-sex mode |
+| `pop` | Focal population counts. A single matrix (ages × years) representing the population of the focal sex — pass female population when `sex_focal = "f"`, male when `"m"` |
 | `output_year` | `NULL` computes for all years in `kin_full`; pass a vector to restrict |
 
 **Accepted input formats for `qx` and `pop`:**
@@ -345,12 +361,14 @@ colSums(pop_mat)[as.character(c(1950, 1970, 1990, 2010))] |>
 - A long data frame with columns `year`, `age`, and the value column
 - A named list `list(f = <matrix>, m = <matrix>)` for two-sex inputs
 
+Because `kin_full` has a `sex_kin` column (two-sex mode), `qx` must be a sex-specific named list so that each kin's mortality risk uses the right sex's rates. `pop` is the **focal** population — since we ran `kin2sex()` with `sex_focal = "f"`, we pass the female population (`swe_pop`). Male population is not needed here because there are no male focals in this run.
+
 ```{r run-bereavement}
 result <- bereavement(
   kin_full    = kin_full,
-  qx          = list(f = qx_f, m = qx_m),
-  pop         = pop_mat,
-  output_year = NULL          # compute for all years 1900-2018
+  qx          = list(f = qx_f, m = qx_m),  # sex-specific: applied to kin by sex_kin
+  pop         = pop_mat,                     # female focal population
+  output_year = NULL
 )
 
 glimpse(result)
@@ -363,33 +381,37 @@ Each row is one combination of (year, focal age, kin type). The columns are:
 | `year` | Calendar year |
 | `age_focal` | Age of the focal woman |
 | `kin` | Relationship type code |
-| `bereaved` | Expected number of bereaved women at this age = `q0 × N(age, year)` |
+| `bereaved` | Expected number of bereaved women at this age = `b(a,y,k) × N(a,y)` |
 | `bereaved_prop` | `bereaved / N(year)` — this age's contribution to the total bereaved share |
 
 ---
 
-## Step 6 — Inspect the probability surface
+## Step 6 — Inspect the bereavement probability by age
 
-Before aggregating to counts, it is useful to look at `q0` (the per-capita probability) for a single year. This shows how bereavement risk varies across the life course for each kin type:
+Before aggregating to counts, it is useful to look at `b(a, y, k)` — the per-capita bereavement probability — for a single year. This shows how the risk of losing each kin type varies across the life course.
 
-```{r plot-q0, fig.height=5}
+`bereaved_prop` in the output is `b(a,y,k) × N(a,y) / N_total(y)` — the age-specific bereaved share. Dividing by the age's population share recovers `b(a,y,k)`:
+
+```{r plot-p-ber, fig.height=5}
 result |>
   filter(year == 1980) |>
-  # bereaved_prop sums to the total share; divide by pop share to get q0
   left_join(
-    tibble(age_focal = 0:100, pop_share = pop_mat[, "1980"] / sum(pop_mat[, "1980"])),
+    tibble(
+      age_focal  = 0:100,
+      pop_share  = pop_mat[, "1980"] / sum(pop_mat[, "1980"])
+    ),
     by = "age_focal"
   ) |>
-  mutate(q0 = bereaved_prop / pop_share) |>
+  mutate(p_ber = bereaved_prop / pop_share) |>   # recover b(a, y, k)
   rename_kin(sex = "f") |>
-  ggplot(aes(age_focal, q0)) +
+  ggplot(aes(age_focal, p_ber)) +
   geom_line(colour = "#e74c3c", linewidth = 0.8) +
   scale_y_continuous(labels = scales::percent_format(accuracy = 0.1)) +
   facet_wrap(~ kin_label, scales = "free_y", nrow = 2) +
   labs(
-    title    = "P(losing ≥1 relative this year) by focal age — Sweden 1980",
+    title    = "b(a, y, k): annual bereavement probability by focal age — Sweden 1980",
     subtitle = "Product method. Female focal, two-sex time-varying model.",
-    x = "Age of focal woman", y = "Annual bereavement probability"
+    x = "Age of focal woman", y = "b(a, y, k)"
   ) +
   theme_bw(base_size = 10) +
   theme(
@@ -484,8 +506,7 @@ tibble(year = 1980L, age = 0:100, sex = "f", qx = qx_f_mat[, "1980"])
 list(f = qx_f_mat, m = qx_m_mat)
 ```
 
-`qx` must be sex-specific when `kin_full` has a `sex_kin` column (two-sex mode).
-`pop` does not need to be sex-specific even in two-sex mode.
+`qx` must be a named list `list(f=..., m=...)` when `kin_full` has a `sex_kin` column (two-sex mode) — the function enforces this. `pop` is always a single matrix: pass the population of whichever focal sex was used in `kin2sex()`.
 
 ---
 

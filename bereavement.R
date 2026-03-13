@@ -161,11 +161,20 @@ bereavement <- function(
 
   # ── Step 6: Compute bereaved and bereaved_prop ────────────────────────────
 
-  # Total population per year (denominator for proportion)
-  pop_denom <- summarise(pop_long, pop_total = sum(pop, na.rm = TRUE), .by = year)
+  # Total focal population per year (denominator for proportion).
+  # When pop is sex-specific (has a sex_focal column after renaming), compute
+  # the denominator separately per focal sex, so bereaved_prop = bereaved / N_focal_sex.
+  pop_join_for_denom <- pop_long |> rename(age_focal = age)
+  if ("sex" %in% names(pop_join_for_denom)) {
+    pop_join_for_denom <- rename(pop_join_for_denom, sex_focal = sex)
+  }
+  denom_group_vars <- intersect(c("year", "sex_focal"), names(pop_join_for_denom))
+  pop_denom <- summarise(pop_join_for_denom, pop_total = sum(pop, na.rm = TRUE),
+                         .by = all_of(denom_group_vars))
 
+  denom_join_keys <- intersect(c("year", "sex_focal"), names(pop_denom))
   result <- p0 |>
-    left_join(pop_denom, by = "year") |>
+    left_join(pop_denom, by = denom_join_keys) |>
     mutate(
       bereaved      = (1 - p0) * pop_focal,
       bereaved_prop = bereaved / pop_total
