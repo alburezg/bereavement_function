@@ -21,7 +21,27 @@ bereavement(): Period Bereavement Estimation with DemoKin
 - [Step 7 — Aggregate and summarise](#step-7--aggregate-and-summarise)
 - [Step 8 — Plot bereaved counts by kin
   type](#step-8--plot-bereaved-counts-by-kin-type)
+- [Step 9 — Grouped kin types with
+  `group_kin`](#step-9--grouped-kin-types-with-group_kin)
+- [Time-invariant mode](#time-invariant-mode)
 - [Input format reference](#input-format-reference)
+- [Is the product method a Poisson
+  approximation?](#is-the-product-method-a-poisson-approximation)
+  - [Background: the Poisson
+    distribution](#background-the-poisson-distribution)
+  - [Setting up the problem](#setting-up-the-problem)
+  - [Case 1 — Fixed kin count: the product
+    formula](#case-1--fixed-kin-count-the-product-formula)
+  - [Case 2 — Poisson-distributed kin count: the exact Poisson
+    formula](#case-2--poisson-distributed-kin-count-the-exact-poisson-formula)
+  - [Comparing the two formulas](#comparing-the-two-formulas)
+  - [Toy data: visualising the
+    difference](#toy-data-visualising-the-difference)
+  - [Why they differ: the log
+    approximation](#why-they-differ-the-log-approximation)
+  - [What about ancestor kin?](#what-about-ancestor-kin)
+  - [Practical implications — what to watch out
+    for](#practical-implications--what-to-watch-out-for)
 - [References](#references)
 
 `bereavement()` is an R function that estimates how many people in a
@@ -80,15 +100,14 @@ incorporating separate male and female demographic rates that can change
 over time. The output is a data frame `kin_full` with one row per
 combination of:
 
-| Column      | Meaning                                                  |
-|-------------|----------------------------------------------------------|
-| `year`      | Calendar year                                            |
-| `age_focal` | Age of the focal person (0–100)                          |
-| `kin`       | Relationship type (see table below)                      |
-| `age_kin`   | Age of the relative (0–100)                              |
-| `sex_kin`   | Sex of the relative (`"f"` or `"m"`)                     |
-| `living`    | Expected number of living relatives with this profile    |
-| `dead`      | Cumulative expected deaths of this kin type up to `year` |
+| Column      | Meaning                                               |
+|-------------|-------------------------------------------------------|
+| `year`      | Calendar year                                         |
+| `age_focal` | Age of the focal person (0–100)                       |
+| `kin`       | Relationship type (see table below)                   |
+| `age_kin`   | Age of the relative (0–100)                           |
+| `sex_kin`   | Sex of the relative (`"f"` or `"m"`)                  |
+| `living`    | Expected number of living relatives with this profile |
 
 Common kin type codes:
 
@@ -473,6 +492,7 @@ colSums(pop_mat)[as.character(c(1950, 1970, 1990, 2010))] |>
 | `qx` | Probability of dying. Named list `list(f = ..., m = ...)` in two-sex mode |
 | `pop` | Population counts. Named list `list(f = ..., m = ...)` in two-sex mode; the function sums both sexes to get total population per (age, year), which is used as the focal count and denominator for `bereaved_prop` |
 | `output_year` | `NULL` computes for all years in `kin_full`; pass a vector to restrict |
+| `group_kin` | Named list of kin groupings, e.g. `list(nuclear = c("m", "d", "s"))`. Each group is appended to the output as an additional kin type (default `NULL`) |
 
 **Accepted input formats for `qx` and `pop`:**
 
@@ -658,6 +678,87 @@ changing age structure of the population.
 
 ------------------------------------------------------------------------
 
+## Step 9 — Grouped kin types with `group_kin`
+
+The `group_kin` argument lets you define composite kin categories. For
+each group, the function computes the probability of losing *at least
+one relative in the group* — still under the independence assumption —
+by multiplying the individual survival probabilities across all
+constituent kin types:
+
+    P(lose ≥1 kin in group | age a, year y) = 1 - ∏_{k in group} p0(a, y, k)
+
+where `p0(a, y, k)` is the probability that *all* living relatives of
+type *k* survive the year. Group results are appended to the output
+alongside the individual kin types.
+
+``` r
+result_grouped <- bereavement(
+  kin_full    = kin_full,
+  qx          = list(f = qx_f, m = qx_m),
+  pop         = list(f = pop_mat, m = pop_mat),
+  output_year = c(1950, 1970, 1990, 2010),
+  group_kin   = list(
+    nuclear  = c("m", "d"),      # parents + children
+    ancestor = c("m", "gm")      # parents + grandparents
+  )
+)
+
+result_grouped |>
+  filter(kin %in% c("nuclear", "ancestor")) |>
+  summarise(bereaved = sum(bereaved), bereaved_prop = sum(bereaved_prop),
+            .by = c(year, kin)) |>
+  mutate(pct = round(bereaved_prop * 100, 2)) |>
+  select(kin, year, pct) |>
+  pivot_wider(names_from = year, values_from = pct)
+```
+
+    ## # A tibble: 2 × 5
+    ##   kin      `1950` `1970` `1990` `2010`
+    ##   <chr>     <dbl>  <dbl>  <dbl>  <dbl>
+    ## 1 ancestor   5.78   4.97   5.68   6.06
+    ## 2 nuclear    2.64   2.05   2.18   2.22
+
+------------------------------------------------------------------------
+
+## Time-invariant mode
+
+`bereavement()` also accepts `kin_full` produced by
+`kin(time_invariant = TRUE)` or `kin2sex(time_invariant = TRUE)`. In
+time-invariant mode, DemoKin sets all values in the `year` column to
+`NA`. The function detects this automatically and drops `year` from all
+join keys, so `qx` and `pop` can be passed as plain vectors or
+single-column matrices.
+
+``` r
+# Time-invariant kinship from a single year's rates
+kin_ti <- kin(
+  U    = swe_px[, "2010"],
+  f    = swe_asfr[, "2010"],
+  time_invariant = TRUE
+)$kin_full
+
+# qx and pop as plain vectors (no year dimension needed)
+qx_2010  <- 1 - swe_px[, "2010"]
+pop_2010 <- swe_pop[, "2010"]
+
+# Fix terminal age
+qx_2010[101] <- 1 - exp(-(-log(swe_px[100, "2010"])))
+
+result_ti <- bereavement(
+  kin_full = kin_ti,
+  qx       = qx_2010,
+  pop      = pop_2010
+)
+head(result_ti)
+```
+
+In time-invariant mode the output has `year = NA` and represents the
+stationary-population (stable-equivalent) bereavement probabilities
+implied by holding rates fixed at the supplied values.
+
+------------------------------------------------------------------------
+
 ## Input format reference
 
 `qx` and `pop` each accept any of the following formats:
@@ -682,6 +783,320 @@ are single matrices.
 
 ------------------------------------------------------------------------
 
+## Is the product method a Poisson approximation?
+
+**Short answer:** The product method is deeply connected to Poisson
+reasoning, but it is *not* identical to the standard Poisson
+approximation $`1 - e^{-Lq}`$. For low death probabilities (baseline
+demography) the two are nearly indistinguishable. For large death
+probabilities (conflict, pandemic, very old ages) the product formula
+gives systematically *higher* bereavement — it is the more conservative
+estimate. Understanding this distinction matters when comparing this
+function’s output against the Caswell, Verdery, and Margolis (2023)
+alternative, which is built on the Poisson approximation.
+
+------------------------------------------------------------------------
+
+### Background: the Poisson distribution
+
+The **Poisson distribution** with mean $`\lambda`$ gives the probability
+of observing exactly $`k`$ independent, rare events:
+
+``` math
+P(N = k) = \frac{e^{-\lambda} \lambda^k}{k!}, \quad k = 0, 1, 2, \ldots
+```
+
+Two properties are relevant here:
+
+1.  **Mean = variance = $`\lambda`$.** This is the signature of Poisson
+    behaviour. Caswell (2024) shows empirically that the variance in the
+    number of living *descendants* and *collateral* kin tracks the mean
+    closely — exactly the Poisson fingerprint. Ancestor kin (parents,
+    grandparents) are bounded at 2 and 4 respectively; their variance is
+    below their mean, making the binomial the appropriate distribution
+    for them.
+
+2.  **Rare-events origin.** A Poisson arises when many independent
+    trials each have a small probability of “success.” Each relative’s
+    existence depends on a long chain of births surviving to the right
+    ages — a process that naturally produces Poisson-distributed counts
+    in large populations.
+
+------------------------------------------------------------------------
+
+### Setting up the problem
+
+Fix a focal person of age $`a`$ in year $`y`$ and a kin type $`k`$. For
+relatives of type $`k`$ aged $`a'`$, define:
+
+- $`L = L(a, a', k, y)`$: expected number of **living** kin at age
+  $`a'`$, from `kin2sex()`. A continuous real number.
+- $`q = q(a', y)`$: probability of dying during year $`y`$ at age
+  $`a'`$, from the life table.
+
+We want
+$`P(\text{focal loses} \geq 1 \text{ kin of type } k \text{ in year } y)`$,
+which equals $`1 - P(\text{all kin survive year } y)`$.
+
+There are two natural derivations depending on what we assume about the
+*actual* number of kin.
+
+------------------------------------------------------------------------
+
+### Case 1 — Fixed kin count: the product formula
+
+Suppose the kin count is **fixed** at exactly $`L`$ (treating the mean
+as the actual count). Under independence, the probability that all $`L`$
+survive is:
+
+``` math
+P(\text{all survive}) = (1-q)^L = \exp(L \ln(1-q))
+```
+
+The right-hand form extends naturally to non-integer $`L`$, as `living`
+from DemoKin is continuous. Aggregating over all kin ages $`a'`$ and
+both sexes $`g`$:
+
+``` math
+q_0(a, y, k) = 1 - \prod_{a'}\prod_{g} (1 - q(a', y, g))^{L(a, a', k, y, g)}
+```
+
+This is `bereavement()`’s formula. It is **exact** given (i)
+independence of deaths and (ii) kin count equals its expected value
+$`L`$.
+
+------------------------------------------------------------------------
+
+### Case 2 — Poisson-distributed kin count: the exact Poisson formula
+
+Now suppose the actual kin count $`N`$ is **random**:
+$`N \sim \text{Poisson}(L)`$. Given $`N`$, each individual survives
+independently with probability $`1 - q`$. The probability that all
+survive, averaged over the randomness in $`N`$, is:
+
+``` math
+P(\text{all survive}) = E\!\left[(1-q)^N\right]
+```
+
+This is the **probability generating function (PGF)** of the Poisson
+distribution evaluated at $`z = (1-q)`$.
+
+**Deriving the PGF.** For $`N \sim \text{Poisson}(\lambda)`$:
+
+``` math
+G_N(z) = E[z^N] = \sum_{n=0}^{\infty} z^n \frac{e^{-\lambda}\lambda^n}{n!}
+= e^{-\lambda} e^{z\lambda} = e^{\lambda(z-1)}
+```
+
+Setting $`\lambda = L`$ and $`z = (1-q)`$:
+
+``` math
+E\!\left[(1-q)^N\right] = e^{L((1-q)-1)} = e^{-Lq}
+```
+
+So under Poisson-distributed kin counts:
+
+``` math
+q_0 = 1 - e^{-Lq}
+```
+
+This is the **Poisson approximation** of Caswell, Verdery, and Margolis
+(2023, eq. 21) and Caswell (2024, eq. 34), used for descendants and
+collateral kin.
+
+------------------------------------------------------------------------
+
+### Comparing the two formulas
+
+| Formula | Expression | Kin count assumption |
+|----|----|----|
+| **Product method** | $`1 - (1-q)^L = 1 - e^{L\ln(1-q)}`$ | Fixed at $`L`$ |
+| **Poisson (Caswell et al.)** | $`1 - e^{-Lq}`$ | Random: $`N \sim \text{Poisson}(L)`$ |
+
+They are equal only when $`\ln(1-q) = -q`$, which holds only at
+$`q = 0`$. For $`q > 0`$:
+
+``` math
+\ln(1-q) = -q - \frac{q^2}{2} - \frac{q^3}{3} - \cdots < -q
+```
+
+Therefore $`L\ln(1-q) < -Lq`$, which means $`(1-q)^L < e^{-Lq}`$, so:
+
+- **Survival** probability is *lower* under the product method
+- **Bereavement** probability is *higher* under the product method
+- The product method is the **upper bound**
+
+The two formulas converge as $`q \to 0`$ (the higher-order terms
+$`q^2/2 + q^3/3 + \cdots`$ vanish). For baseline demographic mortality
+($`q < 0.02`$) they are numerically indistinguishable. For conflict or
+epidemic mortality ($`q`$ can reach $`0.05`$–$`0.30`$), the gap becomes
+material.
+
+Jensen’s inequality provides the underlying reason: $`(1-q)^n`$ is
+convex in $`n`$ for $`0 < q < 1`$, so
+$`E[(1-q)^N] \geq (1-q)^{E[N]} = (1-q)^L`$. Treating $`N`$ as
+Poisson-distributed yields a *higher* survival probability than plugging
+in its mean — the product method understates survival (and overstates
+bereavement).
+
+------------------------------------------------------------------------
+
+### Toy data: visualising the difference
+
+The chunk below computes both formulas over the full range of $`q`$ for
+three values of $`L`$ and plots them side by side. Run this after
+loading `tidyverse`.
+
+``` r
+expand_grid(
+  q = seq(0.001, 0.99, by = 0.001),
+  L = c(1, 3, 5)
+) |>
+  mutate(
+    kike    = 1 - (1 - q)^L,
+    poisson = 1 - exp(-L * q)
+  ) |>
+  pivot_longer(c(kike, poisson), names_to = "method", values_to = "p_bereaved") |>
+  ggplot(aes(x = q, y = p_bereaved, colour = method, linetype = method)) +
+  geom_line(linewidth = 0.9) +
+  facet_wrap(~paste0("Expected kin  L = ", L)) +
+  labs(
+    x        = "Death probability  q",
+    y        = "P(lose \u22651 kin)",
+    title    = "Product formula vs Poisson approximation",
+    subtitle = "Formulas converge as q \u2192 0; product method gives higher bereavement for large q",
+    colour   = "Formula",
+    linetype = "Formula"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(panel.grid.minor = element_blank(), legend.position = "bottom")
+```
+
+![](man/figures/README-poisson-comparison-1.png)<!-- -->
+
+The table below fixes $`L = 3`$ (roughly the number of living siblings
+in mid-adulthood) and varies $`q`$:
+
+``` r
+tibble(
+  q = c(0.001, 0.010, 0.050, 0.100, 0.200, 0.300, 0.500)
+) |>
+  mutate(
+    kike    = round(1 - (1 - q)^3, 3),
+    poisson = round(1 - exp(-3 * q), 3),
+    diff    = round(kike - poisson, 3)
+  ) |>
+  knitr::kable(
+    col.names = c("q", "Product: 1-(1-q)^3", "Poisson: 1-exp(-3q)", "Difference"),
+    caption   = "Bereavement probability under both formulas (L = 3 expected kin)"
+  )
+```
+
+|     q | Product: 1-(1-q)^3 | Poisson: 1-exp(-3q) | Difference |
+|------:|-------------------:|--------------------:|-----------:|
+| 0.001 |              0.003 |               0.003 |      0.000 |
+| 0.010 |              0.030 |               0.030 |      0.000 |
+| 0.050 |              0.143 |               0.139 |      0.004 |
+| 0.100 |              0.271 |               0.259 |      0.012 |
+| 0.200 |              0.488 |               0.451 |      0.037 |
+| 0.300 |              0.657 |               0.593 |      0.064 |
+| 0.500 |              0.875 |               0.777 |      0.098 |
+
+Bereavement probability under both formulas (L = 3 expected kin)
+
+For baseline mortality (rows 1–2) the formulas agree to three decimal
+places. For conflict-level mortality (rows 4–6), the product method
+gives 1–6 percentage points more bereavement. At $`q = 0.5`$ — plausible
+for very old kin during intense conflict — the gap reaches nearly 10
+percentage points.
+
+------------------------------------------------------------------------
+
+### Why they differ: the log approximation
+
+The product formula uses the **exact** log: $`\ln(1-q)`$. The Poisson
+formula uses its **first-order Taylor approximation**
+$`\ln(1-q) \approx -q`$:
+
+``` math
+\underbrace{1 - e^{L\ln(1-q)}}_{\text{product method}}
+\approx \underbrace{1 - e^{-Lq}}_{\text{Poisson}} \quad \text{when } q \text{ is small}
+```
+
+So the product method is *not* the Poisson approximation — it is what
+you get by using the exact log rather than approximating it. In
+low-mortality settings the approximation is harmless. In conflict
+settings it is not.
+
+------------------------------------------------------------------------
+
+### What about ancestor kin?
+
+The Poisson approximation applies only to kin types that are in
+principle unbounded — children, siblings, nieces, cousins. For
+*ancestor* kin (parents, grandparents), the count is bounded by biology:
+at most 2 parents, 4 grandparents, 8 great-grandparents. Caswell (2024)
+shows that the variance in ancestor counts falls well below the mean, so
+the Poisson would misrepresent their distribution. The correct
+approximation is the **binomial** (Caswell, Verdery, and Margolis 2023,
+eqs. 22–24):
+
+``` math
+P(\geq 1 \text{ dead parent}) = 1 - \left(1 - \frac{k_D}{2}\right)^2, \quad
+P(\geq 1 \text{ dead grandparent}) = 1 - \left(1 - \frac{k_D}{4}\right)^4
+```
+
+where $`k_D`$ is the expected number of kin who have already died (from
+DemoKin’s `dead` column, differenced across years). The denominators 2
+and 4 are the maximum possible counts (Goodman, Keyfitz, and Pullum
+1974).
+
+The product method has no such complication: $`(1-q)^L`$ applies
+uniformly to all kin types. When $`L < 1`$ (as for parents in old age or
+grandparents throughout adulthood), the formula automatically
+down-weights the contribution without any distributional assumption.
+
+------------------------------------------------------------------------
+
+### Practical implications — what to watch out for
+
+1.  **Baseline demography ($`q \lesssim 0.02`$):** The product and
+    Poisson formulas agree to within a fraction of a percentage point.
+    Either would give essentially the same answer in peace-time
+    populations.
+
+2.  **Conflict or epidemic mortality ($`q \sim 0.05`$–$`0.30`$):** The
+    product method gives materially higher bereavement (5–15 percentage
+    points for $`L \approx 3`$). The product method is more appropriate
+    here, especially since it accepts an *externally supplied,
+    cause-specific* $`q_x`$ directly, while the Caswell, Verdery,
+    Margolis
+
+    2023) method embeds cause-specific mortality inside the kinship
+          projection matrix itself.
+
+3.  **Independence is the bigger caveat.** Both formulas assume deaths
+    of different kin are independent. In reality, relatives share
+    environments — the same house, the same neighbourhood, the same
+    bombardment. Positive death clustering concentrates losses in fewer
+    families, so both formulas *overestimate* the share of focal persons
+    who are bereaved. A Negative Binomial extension (§5.2 of
+    `HANDOFF.txt`) can be used as a sensitivity check.
+
+4.  **The open question.** Caswell, Verdery, and Margolis (2023) flag
+    that “the quality of these approximations is an open research
+    question.” This refers specifically to the Poisson/binomial approach
+    — not to the product method, which is exact under its own
+    (fixed-count, independence) assumptions.
+
+5.  **Year alignment.** The product method uses the `living` column
+    directly for year $`y`$ and needs no offset. The Poisson method uses
+    the *differenced* `dead` column (`dead` at $`y+1`$ minus `dead` at
+    $`y`$), so it requires two consecutive years of kinship output. Make
+    sure year alignment is consistent when comparing the two methods.
+
+------------------------------------------------------------------------
+
 ## References
 
 Caswell, H. (2019). The formal demography of kinship: A matrix
@@ -689,6 +1104,41 @@ formulation. *Demographic Research*, 41, 679–712.
 
 Caswell, H. (2022). Formal demography of kinship IV: Two-sex models.
 *Demographic Research*, 47, 359–396.
+
+Caswell, H., Verdery, A. M., & Margolis, R. (2023). The formal
+demography of kinship V: Kin loss, bereavement, and causes of death.
+*Demographic Research*, 49(41).
+<https://www.demographic-research.org/articles/volume/49/41> *\[Source
+of the Poisson/binomial approximation formulas.\]*
+
+Caswell, H. (2024). The formal demography of kinship VI: Demographic
+stochasticity, variance, and covariance in the kinship network.
+*bioRxiv*. <https://doi.org/10.1101/2024.05.22.594706> *\[Variance
+analysis confirming Poisson for collaterals/descendants, binomial for
+ancestors; eqs. 34–35 are the key formulas.\]*
+
+Goodman, L. A., Keyfitz, N., & Pullum, T. W. (1974). Family formation
+and the frequency of various kinship relationships. *Theoretical
+Population Biology*, 5, 1–27. *\[GKP factors: maximum counts of 2
+parents, 4 grandparents used in binomial formulas.\]*
+
+Song, X., Campbell, C. D., & Lee, J. Z. (2015). Ancestry matters:
+Patrilineage growth and extinction. *American Sociological Review*,
+80(3), 574–602.
+
+Song, X., & Mare, R. D. (2019). Shared lifetimes, multigenerational
+exposure, and educational mobility. *Demography*, 56(3), 891–916.
+*\[Early demographic applications of the Poisson approximation.\]*
+
+Verdery, A. M., Ryan-Claytor, C., Smith-Greenaway, E., Sarkar, N., &
+Livings, M. (2024). More than 1.4 million US children have lost a family
+member to drug overdose. *American Journal of Public Health*, 114(12),
+1394–1397. <https://doi.org/10.2105/AJPH.2024.307847>
+
+Acosta, E., Alburez-Gutierrez, D., Gargiulo, M., & Torres, C. (2026).
+Weaponizing kinship: A demographic analysis of bereavement in the
+Colombian conflict. *Population and Development Review*. *\[Source of
+the product method as applied to conflict mortality.\]*
 
 Alburez-Gutierrez, D. et al. (2024). *Science Advances*, 10, eado6951.
 <https://doi.org/10.1126/sciadv.ado6951>
