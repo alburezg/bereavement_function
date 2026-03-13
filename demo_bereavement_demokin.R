@@ -145,8 +145,15 @@ sort(unique(kin_full$kin))
 # In a formal analysis, derive qx from mx using DemoTools::lt_single_mx()
 # for a proper life-table treatment.
 
-qx_f <- 1 - pmax(pf, 1e-6)   # female qx, terminal age capped
-qx_m <- 1 - pmax(pm, 1e-6)   # male   qx, terminal age capped
+qx_f <- 1 - pf
+qx_m <- 1 - pm
+
+# Terminal age (row 101, age 100): px = 0 by life table convention → qx = 1.
+# Approximate using mx from age 99: qx[100] = 1 - exp(-mx[99])
+mx_f_99 <- -log(pf[100, ])
+mx_m_99 <- -log(pm[100, ])
+qx_f[101, ] <- 1 - exp(-mx_f_99)
+qx_m[101, ] <- 1 - exp(-mx_m_99)
 
 dimnames(qx_f) <- dimnames(pf)
 dimnames(qx_m) <- dimnames(pm)
@@ -188,7 +195,7 @@ dimnames(pop_mat) <- list(as.character(0:100), colnames(swe_pop))
 result <- bereavement(
   kin_full    = kin_full,
   qx          = list(f = qx_f, m = qx_m),
-  pop         = pop_mat,
+  pop         = list(f = pop_mat, m = pop_mat),  # female pop used for both (demo only)
   output_year = NULL
 )
 

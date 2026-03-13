@@ -471,7 +471,7 @@ colSums(pop_mat)[as.character(c(1950, 1970, 1990, 2010))] |>
 |----|----|
 | `kin_full` | Data frame from `kin2sex()` or `kin()` |
 | `qx` | Probability of dying. Named list `list(f = ..., m = ...)` in two-sex mode |
-| `pop` | Focal population counts. A single matrix (ages × years) representing the population of the focal sex — pass female population when `sex_focal = "f"`, male when `"m"` |
+| `pop` | Population counts. Named list `list(f = ..., m = ...)` in two-sex mode; the function sums both sexes to get total population per (age, year), which is used as the focal count and denominator for `bereaved_prop` |
 | `output_year` | `NULL` computes for all years in `kin_full`; pass a vector to restrict |
 
 **Accepted input formats for `qx` and `pop`:**
@@ -480,18 +480,22 @@ colSums(pop_mat)[as.character(c(1950, 1970, 1990, 2010))] |>
 - A long data frame with columns `year`, `age`, and the value column
 - A named list `list(f = <matrix>, m = <matrix>)` for two-sex inputs
 
-Because `kin_full` has a `sex_kin` column (two-sex mode), `qx` must be a
-sex-specific named list so that each kin’s mortality risk uses the right
-sex’s rates. `pop` is the **focal** population — since we ran
-`kin2sex()` with `sex_focal = "f"`, we pass the female population
-(`swe_pop`). Male population is not needed here because there are no
-male focals in this run.
+Because `kin_full` has a `sex_kin` column, both `qx` and `pop` must be
+named lists with `f` and `m` entries. `qx` is sex-specific because the
+death probability applied to each relative must match that relative’s
+sex. `pop` is sex-specific so that the function can compute the total
+(female + male) population as the denominator for `bereaved_prop`.
+
+`DemoKin` ships only female Swedish population data, so we pass
+`swe_pop` for both sexes here — the total population will be doubled,
+which is an approximation. In a real study, supply the observed male
+population as `m`:
 
 ``` r
 result <- bereavement(
   kin_full    = kin_full,
-  qx          = list(f = qx_f, m = qx_m),  # sex-specific: applied to kin by sex_kin
-  pop         = pop_mat,                     # female focal population
+  qx          = list(f = qx_f, m = qx_m),
+  pop         = list(f = pop_mat, m = pop_mat),  # female pop used for both (demo only)
   output_year = NULL
 )
 
@@ -503,7 +507,7 @@ glimpse(result)
     ## $ year          <int> 1900, 1900, 1900, 1900, 1900, 1900, 1900, 1900, 1900, 19…
     ## $ age_focal     <int> 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16…
     ## $ kin           <chr> "d", "d", "d", "d", "d", "d", "d", "d", "d", "d", "d", "…
-    ## $ bereaved      <dbl> 0.0000000, 0.0000000, 0.0000000, 0.0000000, 0.0000000, 0…
+    ## $ bereaved      <dbl> 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.0000…
     ## $ bereaved_prop <dbl> 0.0000000000000, 0.0000000000000, 0.0000000000000, 0.000…
 
 Each row is one combination of (year, focal age, kin type). The columns
@@ -534,8 +538,9 @@ result |>
   filter(year == 1980) |>
   left_join(
     tibble(
-      age_focal  = 0:100,
-      pop_share  = pop_mat[, "1980"] / sum(pop_mat[, "1980"])
+      age_focal = 0:100,
+      # total pop used inside bereavement() = pop_f + pop_m = 2 × pop_mat (demo)
+      pop_share = (2 * pop_mat[, "1980"]) / sum(2 * pop_mat[, "1980"])
     ),
     by = "age_focal"
   ) |>
@@ -671,10 +676,9 @@ tibble(year = 1980L, age = 0:100, sex = "f", qx = qx_f_mat[, "1980"])
 list(f = qx_f_mat, m = qx_m_mat)
 ```
 
-`qx` must be a named list `list(f=..., m=...)` when `kin_full` has a
-`sex_kin` column (two-sex mode) — the function enforces this. `pop` is
-always a single matrix: pass the population of whichever focal sex was
-used in `kin2sex()`.
+In two-sex mode (`kin_full` has a `sex_kin` column), both `qx` and `pop`
+must be named lists — the function enforces this. In one-sex mode, both
+are single matrices.
 
 ------------------------------------------------------------------------
 
