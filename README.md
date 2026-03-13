@@ -35,8 +35,8 @@ bereavement(): Period Bereavement Estimation with DemoKin
   - [Case 2 — Poisson-distributed kin count: the exact Poisson
     formula](#case-2--poisson-distributed-kin-count-the-exact-poisson-formula)
   - [Comparing the two formulas](#comparing-the-two-formulas)
-  - [Toy data: visualising the
-    difference](#toy-data-visualising-the-difference)
+  - [Comparing both methods on real kinship
+    data](#comparing-both-methods-on-real-kinship-data)
   - [Why they differ: the log
     approximation](#why-they-differ-the-log-approximation)
   - [What about ancestor kin?](#what-about-ancestor-kin)
@@ -850,12 +850,63 @@ as the actual count). Under independence, the probability that all $`L`$
 survive is:
 
 ``` math
-P(\text{all survive}) = (1-q)^L = \exp(L \ln(1-q))
+P(\text{all survive}) = (1-q)^L
 ```
 
-The right-hand form extends naturally to non-integer $`L`$, as `living`
-from DemoKin is continuous. Aggregating over all kin ages $`a'`$ and
-both sexes $`g`$:
+For integer $`L`$ this is just repeated multiplication:
+$`(1-q) \times (1-q) \times
+\cdots`$ ($`L`$ times). But DemoKin’s `living` column is **continuous**
+— a focal person aged 30 might have $`L = 0.73`$ expected grandmothers
+aged 68, not 0 or 1. So we need to extend the formula to non-integer
+$`L`$.
+
+**The extension via $`e`$ and $`\ln`$.** Two basic facts:
+
+1.  For any positive number $`x`$: $`x = e^{\ln x}`$ (log and exp are
+    inverses).
+2.  $`(e^a)^L = e^{aL}`$ for any real $`L`$ (power rule for
+    exponentials).
+
+Applying them:
+
+``` math
+(1-q)^L = \left(e^{\ln(1-q)}\right)^L = e^{L\ln(1-q)} = \exp(L\ln(1-q))
+```
+
+The right-hand side is defined for **any real** $`L \geq 0`$ — including
+0.73 or 2.41. No approximation is involved; it is just a rewrite. In R,
+`(1 - q)^L` computes this automatically when `L` is non-integer (it
+internally evaluates `exp(L * log(1 - q))`):
+
+``` r
+# Integer and non-integer exponents: both work, same formula internally
+(0.97)^3          # integer: 0.97 × 0.97 × 0.97
+```
+
+    ## [1] 0.912673
+
+``` r
+exp(3 * log(0.97)) # same thing via exp/log
+```
+
+    ## [1] 0.912673
+
+``` r
+(0.97)^0.73          # non-integer: only the exp/log form makes sense
+```
+
+    ## [1] 0.9780102
+
+``` r
+exp(0.73 * log(0.97)) # identical
+```
+
+    ## [1] 0.9780102
+
+So $`(1-q)^{0.73}`$ means “what is the survival probability if the
+expected kin count is 0.73?” — a fractional kin count is interpreted as
+a probability-weighted mixture between having 0 and 1 relative.
+Aggregating over all kin ages $`a'`$ and both sexes $`g`$:
 
 ``` math
 q_0(a, y, k) = 1 - \prod_{a'}\prod_{g} (1 - q(a', y, g))^{L(a, a', k, y, g)}
@@ -941,92 +992,253 @@ bereavement).
 
 ------------------------------------------------------------------------
 
-### Toy data: visualising the difference
+### Comparing both methods on real kinship data
 
-The chunk below computes both formulas over the full range of $`q`$ for
-three values of $`L`$ and plots them side by side. Run this after
-loading `tidyverse`.
+The abstract formulas become clearer when applied to an actual kinship
+surface. The two methods draw on *different columns* of DemoKin output
+and require *different external inputs*:
+
+| Input | Product method | Poisson / Binomial method |
+|----|----|----|
+| `kin_full$living` | ✓ expected count of **alive** kin | — not used |
+| `kin_full$dead` | — not used | ✓ expected **period deaths** of kin |
+| External $`q_x`$ | ✓ all-cause (or cause-specific) death probability | — not used |
+
+Using the same `q` and `L` in both formulas (as an algebraic toy)
+conflates these two different quantities. The correct comparison holds
+constant the underlying kinship surface and applies each method as
+designed.
+
+The code below runs a **time-invariant** kinship model on Swedish 1980
+rates — the simplest DemoKin call, no year dimension — and applies both
+methods. A time-invariant model assumes rates stay constant over the
+focal’s lifetime (stable-population approximation); the relative
+behaviour of the two methods is the same as in time-varying models.
 
 ``` r
-expand_grid(
-  q = seq(0.001, 0.99, by = 0.001),
-  L = c(1, 3, 5)
-) |>
-  mutate(
-    kike    = 1 - (1 - q)^L,
-    poisson = 1 - exp(-L * q)
-  ) |>
-  pivot_longer(c(kike, poisson), names_to = "method", values_to = "p_bereaved") |>
-  ggplot(aes(x = q, y = p_bereaved, colour = method, linetype = method)) +
-  geom_line(linewidth = 0.9) +
-  facet_wrap(~paste0("Expected kin  L = ", L)) +
-  labs(
-    x        = "Death probability  q",
-    y        = "P(lose \u22651 kin)",
-    title    = "Product formula vs Poisson approximation",
-    subtitle = "Formulas converge as q \u2192 0; product method gives higher bereavement for large q",
-    colour   = "Formula",
-    linetype = "Formula"
-  ) +
-  theme_bw(base_size = 11) +
-  theme(panel.grid.minor = element_blank(), legend.position = "bottom")
+yr_ref <- "1980"
+
+kin_out_ti <- kin2sex(
+  pf             = pf[, yr_ref, drop = FALSE],
+  pm             = pm[, yr_ref, drop = FALSE],
+  ff             = ff[, yr_ref, drop = FALSE],
+  fm             = fm[, yr_ref, drop = FALSE],
+  sex_focal      = "f",
+  time_invariant = TRUE,
+  birth_female   = 1 / 2.04,
+  output_kin     = c("d", "gd", "gm", "m", "s")
+)
+kin_ti <- kin_out_ti$kin_full
 ```
 
-![](man/figures/README-poisson-comparison-1.png)<!-- -->
-
-The table below fixes $`L = 3`$ (roughly the number of living siblings
-in mid-adulthood) and varies $`q`$:
-
 ``` r
-tibble(
-  q = c(0.001, 0.010, 0.050, 0.100, 0.200, 0.300, 0.500)
-) |>
+qx_f_ref <- setNames(qx_f[, yr_ref], 0:100)
+qx_m_ref <- setNames(qx_m[, yr_ref], 0:100)
+
+# GKP maximum counts for ancestor kin (Goodman, Keyfitz, Pullum 1974)
+n_max <- c(m = 2, gm = 4)
+
+# Product method: P(all kin survive) = prod( (1 - qx_kin)^living )
+product_res <- kin_ti |>
   mutate(
-    kike    = round(1 - (1 - q)^3, 3),
-    poisson = round(1 - exp(-3 * q), 3),
-    diff    = round(kike - poisson, 3)
+    qx_kin  = if_else(sex_kin == "f",
+                      qx_f_ref[as.character(age_kin)],
+                      qx_m_ref[as.character(age_kin)]),
+    p0_cell = (1 - qx_kin)^living
   ) |>
-  knitr::kable(
-    col.names = c("q", "Product: 1-(1-q)^3", "Poisson: 1-exp(-3q)", "Difference"),
-    caption   = "Bereavement probability under both formulas (L = 3 expected kin)"
+  summarise(p0 = prod(p0_cell, na.rm = TRUE), .by = c(age_focal, kin)) |>
+  mutate(q0 = 1 - p0, method = "Product  (living \u00d7 qx)")
+
+# Poisson / Binomial method: sum dead kin, apply appropriate approximation
+poisson_res <- kin_ti |>
+  summarise(dead_total = sum(dead, na.rm = TRUE), .by = c(age_focal, kin)) |>
+  mutate(
+    p0 = case_when(
+      kin == "m"  ~ pmax(0, (1 - dead_total / n_max["m"])^n_max["m"]),   # binomial
+      kin == "gm" ~ pmax(0, (1 - dead_total / n_max["gm"])^n_max["gm"]), # binomial
+      TRUE        ~ exp(-dead_total)                                        # Poisson
+    ),
+    q0     = 1 - p0,
+    method = "Poisson / Binomial  (dead)"
   )
 ```
 
-|     q | Product: 1-(1-q)^3 | Poisson: 1-exp(-3q) | Difference |
-|------:|-------------------:|--------------------:|-----------:|
-| 0.001 |              0.003 |               0.003 |      0.000 |
-| 0.010 |              0.030 |               0.030 |      0.000 |
-| 0.050 |              0.143 |               0.139 |      0.004 |
-| 0.100 |              0.271 |               0.259 |      0.012 |
-| 0.200 |              0.488 |               0.451 |      0.037 |
-| 0.300 |              0.657 |               0.593 |      0.064 |
-| 0.500 |              0.875 |               0.777 |      0.098 |
+``` r
+bind_rows(
+  product_res |> select(age_focal, kin, q0, method),
+  poisson_res |> select(age_focal, kin, q0, method)
+) |>
+  rename_kin(sex = "2sex") |>
+  ggplot(aes(age_focal, q0, colour = method, linetype = method)) +
+  geom_line(linewidth = 0.85, alpha = 0.9) +
+  facet_wrap(~kin_label, scales = "free_y", nrow = 2) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_colour_manual(
+    values = c("Product  (living \u00d7 qx)" = "#2c3e50",
+               "Poisson / Binomial  (dead)"  = "#e74c3c")
+  ) +
+  scale_linetype_manual(
+    values = c("Product  (living \u00d7 qx)" = "solid",
+               "Poisson / Binomial  (dead)"  = "dashed")
+  ) +
+  labs(
+    x        = "Age of focal woman",
+    y        = "P(lose \u22651 kin this year)",
+    title    = "Product vs Poisson/Binomial — Sweden 1980, time-invariant model",
+    subtitle = paste0(
+      "Product method uses kin_full$living + external qx.\n",
+      "Poisson/Binomial method uses kin_full$dead ",
+      "(Poisson for children/siblings/grandchildren; binomial for parents/grandparents)."
+    ),
+    colour   = "Method",
+    linetype = "Method"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid.minor = element_blank(),
+    legend.position  = "bottom",
+    strip.text       = element_text(face = "bold")
+  )
+```
 
-Bereavement probability under both formulas (L = 3 expected kin)
+![](man/figures/README-methods-compare-plot-1.png)<!-- -->
 
-For baseline mortality (rows 1–2) the formulas agree to three decimal
-places. For conflict-level mortality (rows 4–6), the product method
-gives 1–6 percentage points more bereavement. At $`q = 0.5`$ — plausible
-for very old kin during intense conflict — the gap reaches nearly 10
-percentage points.
+The two methods track each other closely across all kin types.
+Differences are small because Swedish all-cause mortality is low —
+mostly in the range where $`\ln(1-q)
+\approx -q`$. The largest gaps appear for grandparents (where the
+binomial approximation is used) and at the oldest focal ages (where kin
+death probabilities are highest). This confirms the theoretical
+prediction: the two formulas converge under low mortality and diverge as
+$`q`$ grows.
 
 ------------------------------------------------------------------------
 
 ### Why they differ: the log approximation
 
-The product formula uses the **exact** log: $`\ln(1-q)`$. The Poisson
-formula uses its **first-order Taylor approximation**
-$`\ln(1-q) \approx -q`$:
+The key is the relationship between $`\ln(1-q)`$ and $`-q`$.
+
+**What is a Taylor approximation?** Any smooth function can be written
+as an infinite polynomial around a point. For $`\ln(1-q)`$ expanded
+around $`q = 0`$:
 
 ``` math
-\underbrace{1 - e^{L\ln(1-q)}}_{\text{product method}}
-\approx \underbrace{1 - e^{-Lq}}_{\text{Poisson}} \quad \text{when } q \text{ is small}
+\ln(1-q) = -q - \frac{q^2}{2} - \frac{q^3}{3} - \frac{q^4}{4} - \cdots
 ```
 
-So the product method is *not* the Poisson approximation — it is what
-you get by using the exact log rather than approximating it. In
-low-mortality settings the approximation is harmless. In conflict
-settings it is not.
+You can verify the first two terms by hand: at $`q = 0`$, $`\ln(1) = 0`$
+✓; the derivative $`\frac{d}{dq}\ln(1-q) = -\frac{1}{1-q}`$, which
+equals $`-1`$ at $`q = 0`$ ✓. The **first-order Taylor approximation**
+keeps only the leading term and drops everything else:
+
+``` math
+\ln(1-q) \approx -q \quad \text{(valid when } q \text{ is small)}
+```
+
+The error in this approximation is the dropped terms:
+$`q^2/2 + q^3/3 + \cdots`$, which are negligible when $`q \ll 1`$ but
+grow quickly as $`q`$ increases.
+
+**Where each formula comes from.** Substituting into the product
+method’s survival probability:
+
+``` math
+\underbrace{e^{L\ln(1-q)}}_{\text{product method: exact log}}
+\approx \underbrace{e^{L \times (-q)}}_{\text{Poisson: first-order approx}}
+= e^{-Lq}
+```
+
+So the Poisson survival formula $`e^{-Lq}`$ is what you get from the
+product formula when you replace $`\ln(1-q)`$ with its first-order
+approximation $`-q`$. Equivalently, the product formula is the *more
+precise* version — it uses the exact log, not the approximation.
+
+**Why does the Poisson formula use the approximation?** It does not,
+actually — it arrives at $`e^{-Lq}`$ from a completely different route
+(the PGF of a Poisson distribution, Case 2 above). The fact that it
+*matches* the first-order Taylor expansion of the product formula is a
+consequence of those two derivations happening to agree when $`q`$ is
+small. The Poisson formula is exact under its own assumption
+(Poisson-distributed kin counts); the product formula is exact under its
+own assumption (fixed kin count at $`L`$). They give different answers
+because the assumptions differ, and the difference shrinks as
+$`q \to 0`$.
+
+**How large is the error?** The table below shows $`\ln(1-q)`$ versus
+$`-q`$ and the percentage error in the approximation:
+
+``` r
+tibble(q = c(0.001, 0.01, 0.05, 0.10, 0.20, 0.30, 0.50)) |>
+  mutate(
+    exact   = round(log(1 - q), 5),
+    approx  = round(-q, 5),
+    pct_err = round(abs(log(1 - q) - (-q)) / abs(log(1 - q)) * 100, 1)
+  ) |>
+  knitr::kable(
+    col.names = c("q", "ln(1-q)  [exact]", "-q  [approx]", "Error (%)"),
+    caption   = "Accuracy of the first-order Taylor approximation ln(1-q) ≈ -q"
+  )
+```
+
+|     q | ln(1-q) \[exact\] | -q \[approx\] | Error (%) |
+|------:|------------------:|--------------:|----------:|
+| 0.001 |          -0.00100 |        -0.001 |       0.1 |
+| 0.010 |          -0.01005 |        -0.010 |       0.5 |
+| 0.050 |          -0.05129 |        -0.050 |       2.5 |
+| 0.100 |          -0.10536 |        -0.100 |       5.1 |
+| 0.200 |          -0.22314 |        -0.200 |      10.4 |
+| 0.300 |          -0.35667 |        -0.300 |      15.9 |
+| 0.500 |          -0.69315 |        -0.500 |      27.9 |
+
+Accuracy of the first-order Taylor approximation ln(1-q) ≈ -q
+
+For $`q = 0.01`$ (typical adult mortality in a low-mortality country)
+the approximation is 0.5% off — completely negligible. For $`q = 0.10`$
+it is 5% off. For $`q = 0.30`$ (plausible conflict mortality for some
+age groups in Gaza) it is 17% off. Because both formulas exponentiate
+this difference multiplied by $`L`$, the bereavement probability gap
+compounds: a 17% error in the log translates to a meaningfully different
+$`P(\geq 1
+\text{ death})`$.
+
+**Visualising the approximation quality:**
+
+``` r
+tibble(q = seq(0.001, 0.8, by = 0.001)) |>
+  mutate(
+    exact  = log(1 - q),
+    approx = -q
+  ) |>
+  pivot_longer(c(exact, approx), names_to = "version", values_to = "value") |>
+  ggplot(aes(x = q, y = value, colour = version, linetype = version)) +
+  geom_line(linewidth = 0.9) +
+  labs(
+    x        = "Death probability  q",
+    y        = "Value",
+    title    = expression("Taylor approximation: " * ln(1-q) %~~% -q),
+    subtitle = "Lines diverge as q grows — error is negligible for baseline mortality, material for conflict",
+    colour   = NULL, linetype = NULL
+  ) +
+  scale_colour_manual(
+    values   = c(exact = "#2c3e50", approx = "#e74c3c"),
+    labels   = c(exact = "ln(1-q)  [exact]", approx = "-q  [first-order approx]")
+  ) +
+  scale_linetype_manual(
+    values = c(exact = "solid", approx = "dashed"),
+    labels = c(exact = "ln(1-q)  [exact]", approx = "-q  [first-order approx]")
+  ) +
+  theme_bw(base_size = 11) +
+  theme(panel.grid.minor = element_blank(), legend.position = "bottom")
+```
+
+![](man/figures/README-taylor-plot-1.png)<!-- -->
+
+The two lines are indistinguishable near $`q = 0`$ and progressively
+diverge. The product method stays on the solid line; the Poisson formula
+implicitly moves to the dashed line. Whichever line is further from zero
+gives a lower exponent and therefore a lower survival probability — and
+since $`-q > \ln(1-q)`$ for all $`q > 0`$, the Poisson formula always
+implies *higher* survival (lower bereavement) than the product method.
 
 ------------------------------------------------------------------------
 
