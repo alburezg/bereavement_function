@@ -1744,15 +1744,18 @@ implications — what to watch out for</h3>
 \lesssim 0.02\)</span>):</strong> The product and Poisson formulas agree
 to within a fraction of a percentage point. Either would give
 essentially the same answer in peace-time populations.</p></li>
-<li><p><strong>Conflict or epidemic mortality (<span class="math inline">\(q \sim 0.05\)</span>–<span class="math inline">\(0.30\)</span>):</strong> The product method gives
-materially higher bereavement (5–15 percentage points for <span class="math inline">\(L \approx 3\)</span>). The product method is more
-appropriate here, especially since it accepts an <em>externally
-supplied, cause-specific</em> <span class="math inline">\(q_x\)</span>
-directly, while the Caswell, Verdery, Margolis</p>
-<ol start="2023" style="list-style-type: decimal">
-<li>method embeds cause-specific mortality inside the kinship projection
-matrix itself.</li>
-</ol></li>
+<li><p><strong>Conflict or epidemic mortality (<span class="math inline">\(q \sim 0.05\)</span>–<span class="math inline">\(0.30\)</span>):</strong> The gap between the two
+formulas widens — the product method gives 5–15 percentage points
+<em>more</em> bereavement than the Poisson formula for <span class="math inline">\(L \approx 3\)</span>. This is a larger
+overestimate, not a smaller one. The product method is nevertheless the
+<strong>practical choice</strong> for cause-specific analyses: it
+accepts an externally supplied conflict <span class="math inline">\(q_x\)</span> applied post-hoc to the
+<code>living</code> surface, without re-running the kinship model. The
+Caswell, Verdery, Margolis (2023) Poisson method requires embedding
+cause-specific mortality inside the kinship projection via enlarged
+absorbing-state matrices — considerably more complex. In Gaza we use the
+product method for this reason, not because it is closer to the Poisson
+formula at high <span class="math inline">\(q\)</span>.</p></li>
 <li><p><strong>Independence is the bigger caveat.</strong> Both formulas
 assume deaths of different kin are independent. In reality, relatives
 share environments — the same house, the same neighbourhood, the same

@@ -1066,14 +1066,18 @@ down-weights the contribution without any distributional assumption.
     populations.
 
 2.  **Conflict or epidemic mortality ($`q \sim 0.05`$–$`0.30`$):** The
-    product method gives materially higher bereavement (5–15 percentage
-    points for $`L \approx 3`$). The product method is more appropriate
-    here, especially since it accepts an *externally supplied,
-    cause-specific* $`q_x`$ directly, while the Caswell, Verdery,
-    Margolis
-
-    2023) method embeds cause-specific mortality inside the kinship
-          projection matrix itself.
+    gap between the two formulas widens — the product method gives 5–15
+    percentage points *more* bereavement than the Poisson formula for
+    $`L \approx 3`$. This is a larger overestimate, not a smaller one.
+    The product method is nevertheless the **practical choice** for
+    cause-specific analyses: it accepts an externally supplied conflict
+    $`q_x`$ applied post-hoc to the `living` surface, without re-running
+    the kinship model. The Caswell, Verdery, Margolis (2023) Poisson
+    method requires embedding cause-specific mortality inside the
+    kinship projection via enlarged absorbing-state matrices —
+    considerably more complex. In Gaza we use the product method for
+    this reason, not because it is closer to the Poisson formula at high
+    $`q`$.
 
 3.  **Independence is the bigger caveat.** Both formulas assume deaths
     of different kin are independent. In reality, relatives share
